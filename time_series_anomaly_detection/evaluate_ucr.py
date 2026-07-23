@@ -1,0 +1,138 @@
+"""
+Real-world validation on the UCR Anomaly Archive (Keogh et al.; see Wu &
+Keogh, "Current Time Series Anomaly Detection Benchmarks are Flawed", 2021)
+- the "UCR" benchmark this project's LITERATURE_REVIEW.md cites as one of
+the standard TSAD datasets used across the surveyed literature.
+
+The archive is NOT bundled in this repo (330MB+ across 250 real sensor/ECG/
+temperature/etc. files) - download it yourself:
+
+    curl -o ucr_anomaly.zip https://www.cs.ucr.edu/~eamonn/time_series_data_2018/UCR_TimeSeriesAnomalyDatasets2021.zip
+    unzip -j ucr_anomaly.zip "*/UCR_Anomaly_FullData/*.txt" -d ucr_data/
+
+Each file is one column of values, named:
+    <index>_UCR_Anomaly_<name>_<train_size>_<anomaly_start>_<anomaly_end>.txt
+The first `train_size` points are anomaly-free by construction (the
+archive's convention - meant to let a detector calibrate on normal data
+before the labeled anomaly interval [anomaly_start, anomaly_end] arrives
+later in the series).
+
+Evaluation protocol: rather than point-adjusted F1 (shown to be gameable -
+see LITERATURE_REVIEW.md §3), we use the stricter "top-1" protocol common
+in this specific archive's own literature (e.g. MERLIN, Matrix Profile
+discord papers): each detector's single highest-scoring point in the test
+region (everything after `train_size`) is its "best guess" at the anomaly
+location, checked for whether it lands inside the labeled interval. This
+can't be gamed by flagging lots of points the way point-adjustment can.
+"""
+
+import os
+import re
+import sys
+import time
+import numpy as np
+import pandas as pd
+
+from anomaly_detection import rolling_zscore_detector, rolling_iqr_detector, trend_residual_detector
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+FILENAME_RE = re.compile(r"^(\d+)_UCR_Anomaly_(.+)_(\d+)_(\d+)_(\d+)\.txt$")
+
+DETECTORS = {
+    "zscore": lambda s: rolling_zscore_detector(s, window=100, threshold=4.0),
+    "iqr": lambda s: rolling_iqr_detector(s, window=100, k=3.0),
+    "trend_residual": lambda s: trend_residual_detector(s, trend_window=100, z_window=100, threshold=4.0),
+}
+
+
+def parse_filename(filename: str) -> dict:
+    m = FILENAME_RE.match(filename)
+    if not m:
+        raise ValueError(f"Unrecognized UCR anomaly filename format: {filename}")
+    idx, name, train_size, anomaly_start, anomaly_end = m.groups()
+    return {
+        "index": int(idx), "name": name, "train_size": int(train_size),
+        "anomaly_start": int(anomaly_start), "anomaly_end": int(anomaly_end),
+    }
+
+
+def load_series(path: str) -> pd.Series:
+    return pd.Series(np.loadtxt(path))
+
+
+def evaluate_file(path: str, filename: str) -> dict:
+    meta = parse_filename(filename)
+    series = load_series(path)
+    test_index = series.index[meta["train_size"]:]
+
+    row = {
+        "file": filename, "name": meta["name"], "length": len(series),
+        "train_size": meta["train_size"],
+        "anomaly_start": meta["anomaly_start"], "anomaly_end": meta["anomaly_end"],
+    }
+
+    for det_name, det_fn in DETECTORS.items():
+        result = det_fn(series)
+        test_scores = result.scores.loc[test_index]
+        if test_scores.max(skipna=True) in (0, None) or test_scores.isna().all():
+            row[f"{det_name}_hit"] = False
+            row[f"{det_name}_top1_index"] = None
+            continue
+        top1_idx = int(test_scores.idxmax())
+        hit = meta["anomaly_start"] <= top1_idx <= meta["anomaly_end"]
+        row[f"{det_name}_hit"] = bool(hit)
+        row[f"{det_name}_top1_index"] = top1_idx
+
+    return row
+
+
+def run_evaluation(data_dir: str, limit: int = None) -> pd.DataFrame:
+    files = sorted(f for f in os.listdir(data_dir) if f.endswith(".txt"))
+    if limit:
+        files = files[:limit]
+
+    rows = []
+    for i, filename in enumerate(files):
+        t0 = time.time()
+        try:
+            row = evaluate_file(os.path.join(data_dir, filename), filename)
+            row["error"] = None
+        except Exception as exc:
+            row = {"file": filename, "error": str(exc)}
+        row["seconds"] = round(time.time() - t0, 2)
+        rows.append(row)
+        print(f"[{i + 1}/{len(files)}] {filename[:65]:65s} {row['seconds']:>6.2f}s")
+
+    return pd.DataFrame(rows)
+
+
+def print_summary(df: pd.DataFrame) -> None:
+    print("\n=== Top-1 hit rate on the UCR Anomaly Archive (real-world data) ===")
+    n_total = len(df)
+    n_errors = df["error"].notna().sum() if "error" in df.columns else 0
+    print(f"Files evaluated: {n_total} ({n_errors} failed to parse/load)")
+    for det_name in DETECTORS:
+        col = f"{det_name}_hit"
+        if col in df.columns:
+            valid = df[col].notna()
+            hit_rate = df.loc[valid, col].mean()
+            print(f"  {det_name:16s}: {hit_rate:.1%} ({int(df.loc[valid, col].sum())}/{valid.sum()} files)")
+
+
+if __name__ == "__main__":
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_HERE, "ucr_data")
+    limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+
+    if not os.path.isdir(data_dir):
+        raise SystemExit(
+            f"'{data_dir}' not found. Download the UCR Anomaly Archive first - see the "
+            "module docstring at the top of this file for the download/unzip commands."
+        )
+
+    df = run_evaluation(data_dir, limit=limit)
+
+    out_csv = os.path.join(_HERE, "ucr_evaluation_results.csv")
+    df.to_csv(out_csv, index=False)
+    print(f"\nSaved detailed per-file results to {out_csv}")
+
+    print_summary(df)

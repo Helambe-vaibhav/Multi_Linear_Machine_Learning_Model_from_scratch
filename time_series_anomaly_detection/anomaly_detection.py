@@ -165,20 +165,17 @@ def rolling_zscore_detector(
 def rolling_iqr_detector(
     series: pd.Series, window: int = 14, k: float = 1.5
 ) -> DetectionResult:
-    def _iqr_bounds(x: pd.Series):
-        q1, q3 = np.nanpercentile(x, 25), np.nanpercentile(x, 75)
-        iqr = q3 - q1
-        return q1 - k * iqr, q3 + k * iqr
-
-    lower = pd.Series(index=series.index, dtype=float)
-    upper = pd.Series(index=series.index, dtype=float)
-    for i in range(len(series)):
-        lo = max(0, i - window)
-        window_vals = series.iloc[lo:i]
-        if len(window_vals) < max(4, window // 2):
-            lower.iloc[i], upper.iloc[i] = -np.inf, np.inf
-            continue
-        lower.iloc[i], upper.iloc[i] = _iqr_bounds(window_vals)
+    """
+    Vectorized via pandas' rolling quantile (no per-point Python loop), shifted
+    by 1 to stay causal like the other detectors - same idea as
+    `rolling_zscore_detector`, just with quartiles instead of mean/std.
+    """
+    min_periods = max(4, window // 2)
+    q1 = series.rolling(window, min_periods=min_periods).quantile(0.25).shift(1)
+    q3 = series.rolling(window, min_periods=min_periods).quantile(0.75).shift(1)
+    iqr = q3 - q1
+    lower = (q1 - k * iqr).fillna(-np.inf)
+    upper = (q3 + k * iqr).fillna(np.inf)
 
     dist_below = (lower - series).clip(lower=0)
     dist_above = (series - upper).clip(lower=0)
