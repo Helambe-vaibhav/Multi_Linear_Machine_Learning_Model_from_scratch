@@ -254,6 +254,31 @@ pairwise/linear rather than a full causal graph and not handling
 confounders. That tradeoff is the paper's likely contribution framing, not
 "we detect root causes first."
 
+The explainability layer (score decomposition, comparative ranking
+narrative, attribution chart — see README "Explainability" section) is
+also done: every candidate's score is an exact sum of three named terms,
+which sidesteps the SHAP/LIME approximation problem entirely rather than
+solving it post-hoc.
+
+**Real-world detector validation done, RCA validation still pending.**
+`evaluate_ucr.py` ran the base detectors (not yet the RCA module — UCR is
+univariate) against the real UCR Anomaly Archive: 250 files, top-1 hit
+rates of 10.0% (z-score), 6.0% (IQR), 10.8% (trend-residual), vs. a 0.84%
+random-guess baseline — meaningfully above chance, but low in absolute
+terms, because this archive was deliberately built (per Wu & Keogh, the
+paper that introduced it) to contain shape/morphology anomalies that
+defeat simple rolling-statistics detectors. Full writeup, category
+breakdown, and example plots are in README.md "Real-world validation".
+This is a citable, honest limitation for the paper, not a result to hide:
+it demonstrates precisely the gap between simple detectors and the
+shape-aware/foundation-model methods discussed in §1, and it means a paper
+claiming RCA or explanation quality should be explicit that those
+components are detector-agnostic wrappers, not a fix for base detection
+recall. **Root-cause validation on real multivariate data is still open**
+— UCR has no covariates, so a real RCA test needs a different dataset
+(SMD, MSAP/MSL, or PSM — all have multiple correlated sensor channels and
+are used as AERCA/PyRCA baselines).
+
 **Concrete next steps toward a paper draft:**
 1. **Real or more realistic synthetic benchmarks.** The current demo has
    one obvious cause; a paper needs harder cases — multiple simultaneous
@@ -340,6 +365,10 @@ step 2.
 - TopoEvo: *A Topology-Aware Self-Evolving Multi-Agent Framework for Root
   Cause Analysis in Microservices*, arXiv:2605.15611 —
   https://arxiv.org/pdf/2605.15611
+- Wu, R. & Keogh, E., *Current Time Series Anomaly Detection Benchmarks are
+  Flawed and What to Do About It* (introduces the UCR Anomaly Archive used
+  in `evaluate_ucr.py`), 2021 — archive:
+  https://www.cs.ucr.edu/~eamonn/time_series_data_2018/UCR_TimeSeriesAnomalyDatasets2021.zip
 - Curated lists: [Awesome-Anomaly-Detection-Foundation-Models](https://github.com/mala-lab/Awesome-Anomaly-Detection-Foundation-Models),
   [Awesome-Time-Series-Explainability](https://github.com/JHoelli/Awesome-Time-Series-Explainability)
 

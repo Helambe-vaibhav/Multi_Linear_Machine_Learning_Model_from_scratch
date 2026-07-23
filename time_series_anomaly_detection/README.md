@@ -18,6 +18,9 @@ explicit and readable.
 | `root_cause_analysis.py` | Multivariate root-cause ranking + explainability + a runnable demo |
 | `root_cause_demo_output.png` | Time series plot from the root-cause demo |
 | `root_cause_score_decomposition.png` | Score-attribution chart from the root-cause demo |
+| `evaluate_ucr.py` | Real-world validation against the UCR Anomaly Archive |
+| `ucr_evaluation_results.csv` | Per-file results from the full 250-file UCR run |
+| `ucr_example_hit.png` / `ucr_example_miss.png` | Illustrative real-data hit/miss cases |
 | `LITERATURE_REVIEW.md` | Survey of current TSAD + explainability research (for paper writing) |
 
 Run the demos:
@@ -290,6 +293,83 @@ This "exact decomposition instead of approximated attribution" property is
 also the paper-framing point in `LITERATURE_REVIEW.md` §2.5: it's the
 concrete mechanism behind the "lightweight, fully transparent" contrast
 with black-box neural RCA (AERCA) and post-hoc-XAI-wrapped deep detectors.
+
+## Real-world validation: the UCR Anomaly Archive (`evaluate_ucr.py`)
+
+Everything above was validated on synthetic data with known, injected
+anomalies - useful for confirming the logic works, but synthetic anomalies
+are easy by construction. `evaluate_ucr.py` runs the three detectors from
+`anomaly_detection.py` against the **UCR Anomaly Archive** (Keogh et al.;
+see Wu & Keogh, *"Current Time Series Anomaly Detection Benchmarks are
+Flawed"*, 2021) — 250 real series (ECG, respiration, gait, air temperature,
+power demand, insect EPG, MARS rover telemetry, etc.), each with exactly
+one labeled anomaly interval. It's one of the nine benchmarks named across
+the surveys in `LITERATURE_REVIEW.md` §1.
+
+The archive is not bundled in this repo (330MB+ across 250 files) - see the
+docstring at the top of `evaluate_ucr.py` for the download/unzip commands.
+
+**Evaluation protocol**: rather than point-adjusted F1 (shown to be
+gameable — `LITERATURE_REVIEW.md` §3), each detector's single
+highest-scoring point in the test region is checked for whether it falls
+inside the labeled anomaly interval - a **top-1 hit rate**, the same
+protocol this specific archive's own literature uses (e.g. MERLIN, Matrix
+Profile discord papers). This can't be inflated by flagging lots of points.
+
+### Results (full 250-file run)
+
+| Detector | Top-1 hit rate |
+|---|---|
+| Rolling Z-Score | 10.0% (25/250) |
+| Rolling IQR | 6.0% (15/250) |
+| Trend-Residual Z-Score | 10.8% (27/250) |
+| **Any of the three agrees** | 16.8% (42/250) |
+| **All three agree** | 3.2% (8/250) |
+| *(random-guess baseline)* | *0.84%* |
+
+**Honest interpretation**: absolute accuracy is low, but these detectors
+are **~12x better than random guessing** (0.84% baseline, given how narrow
+the labeled interval is relative to the whole series) - they are picking up
+real signal, not noise. The low absolute number is expected and, per Wu &
+Keogh's own paper introducing this archive, largely the point: the UCR
+Anomaly Archive was deliberately constructed so that **naive point-deviation
+methods fail** on many of its series, because the "anomaly" is often a
+subtle change in local *shape* (e.g. a slightly different heartbeat
+morphology) rather than a value spike a rolling mean/std or IQR fence can
+catch. Performance varies enormously by domain — e.g. `BIDMC` (2/2, 100%)
+and `NOISECIMIS`/`NOISEMesoplodonDensirostris` (1/1 each) were caught
+easily, while `apneaecg`, `gait`, `tilt`, and `taichidbS` categories scored
+essentially 0%, because those anomalies are shape/morphology changes that a
+rolling window over raw values structurally cannot see.
+
+**Hit example** (`004_UCR_Anomaly_DISTORTEDBIDMC1`, an ECG-like signal) -
+the anomaly is a shape distortion in one beat, small enough to be invisible
+at a glance, but a strong enough local deviation for the trend-residual
+detector to catch exactly:
+
+![UCR hit example](ucr_example_hit.png)
+
+**Miss example** (`001_UCR_Anomaly_DISTORTED1sddb40`, also ECG-like) - the
+labeled anomaly is not visually distinguishable from the rest of the signal
+even at this zoom level, and several other points elsewhere in the series
+look at least as extreme by rolling mean/std, so the detector's top-1 guess
+lands far from the true interval:
+
+![UCR miss example](ucr_example_miss.png)
+
+**What this means for the project**: the point-level "why" explanations and
+the root-cause ranking are both detector-agnostic wrappers - they explain
+*whatever* a detector flags, but they don't improve the underlying
+detector's recall on hard, shape-based anomalies. This is an honest
+limitation to state directly in a paper rather than something to paper
+over: it's exactly the gap that motivates shape-aware methods (Matrix
+Profile discords, KAN-AD's smooth-function residuals) and foundation
+models (§1) over simple rolling statistics, and it's a legitimate
+experiment to report — "our explanations are only as good as the detector
+underneath them" is a genuine, citable limitation.
+
+Reproduce: `python3 evaluate_ucr.py path/to/ucr_data` (add an integer to
+run on only the first N files for a quick check).
 
 ## Limitations
 

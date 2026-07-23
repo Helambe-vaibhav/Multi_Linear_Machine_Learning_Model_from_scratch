@@ -106,6 +106,32 @@ def run_evaluation(data_dir: str, limit: int = None) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def plot_example(data_dir: str, filename: str, detector_name: str, save_path: str) -> None:
+    """Plots one UCR file: full series, shaded true anomaly interval, and the
+    detector's top-1 guess in the test region - for the README's hit/miss
+    illustrations."""
+    import matplotlib.pyplot as plt
+
+    meta = parse_filename(filename)
+    series = load_series(os.path.join(data_dir, filename))
+    result = DETECTORS[detector_name](series)
+    test_index = series.index[meta["train_size"]:]
+    top1_idx = int(result.scores.loc[test_index].idxmax())
+    hit = meta["anomaly_start"] <= top1_idx <= meta["anomaly_end"]
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.plot(series.index, series.values, color="steelblue", linewidth=0.8)
+    ax.axvspan(meta["anomaly_start"], meta["anomaly_end"], color="red", alpha=0.25, label="labeled anomaly")
+    ax.axvline(meta["train_size"], color="gray", linestyle=":", label="train/test split")
+    ax.axvline(top1_idx, color="green" if hit else "black", linestyle="--",
+               label=f"{detector_name} top-1 guess ({'HIT' if hit else 'MISS'})")
+    ax.set_title(f"{meta['name']} ({'hit' if hit else 'miss'}) - {filename}", fontsize=10)
+    ax.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=120)
+    plt.close(fig)
+
+
 def print_summary(df: pd.DataFrame) -> None:
     print("\n=== Top-1 hit rate on the UCR Anomaly Archive (real-world data) ===")
     n_total = len(df)
