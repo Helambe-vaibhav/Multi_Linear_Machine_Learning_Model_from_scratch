@@ -15,8 +15,9 @@ explicit and readable.
 |---|---|
 | `anomaly_detection.py` | Detectors + point-level explanation logic + a runnable demo |
 | `demo_output.png` | Example plot produced by running the anomaly detection demo |
-| `root_cause_analysis.py` | Multivariate root-cause ranking + a runnable demo |
-| `root_cause_demo_output.png` | Example plot produced by running the root-cause demo |
+| `root_cause_analysis.py` | Multivariate root-cause ranking + explainability + a runnable demo |
+| `root_cause_demo_output.png` | Time series plot from the root-cause demo |
+| `root_cause_score_decomposition.png` | Score-attribution chart from the root-cause demo |
 | `LITERATURE_REVIEW.md` | Survey of current TSAD + explainability research (for paper writing) |
 
 Run the demos:
@@ -232,7 +233,7 @@ first by a wide margin:
 ```python
 import pandas as pd
 from anomaly_detection import rolling_zscore_detector
-from root_cause_analysis import analyze_root_causes, summarize
+from root_cause_analysis import analyze_root_causes, summarize, explain_ranking, plot_score_decomposition
 
 target = pd.read_csv("target.csv", index_col="date", parse_dates=True)["value"]
 candidates = {
@@ -244,7 +245,51 @@ detection = rolling_zscore_detector(target)
 anomaly = max(detection.anomalies, key=lambda a: a.score)
 results = analyze_root_causes(target, anomaly.index, candidates, max_lag=10)
 print(summarize(results))
+print(explain_ranking(results))          # why the top candidate outranked the runner-up
+plot_score_decomposition(results, "decomposition.png")
 ```
+
+## Explainability: an exactly-attributable score, not a post-hoc approximation
+
+The literature review (`LITERATURE_REVIEW.md` §2) notes that the standard
+post-hoc XAI tools for anomaly detection — SHAP, LIME — are *approximations*:
+they fit a surrogate model around a black box and estimate feature
+attributions, which "fall short of specificity" on deep/temporal models.
+
+`root_cause_analysis.py` sidesteps that problem by construction: the score
+is a plain weighted sum of three bounded, named terms
+(`CORRELATION_WEIGHT=0.4`, `GRANGER_WEIGHT=0.4`, `CO_OCCURRENCE_BONUS=0.2`),
+so **every candidate's exact contribution from each signal is available
+directly** — `correlation_contribution`, `granger_contribution`, and
+`co_occurrence_contribution` on each `RootCauseCandidate` sum to `score`
+with no approximation, no surrogate model, and no missing residual.
+
+Three explainability outputs come out of this for free:
+
+1. **Per-candidate score breakdown** — every `explanation` string ends with
+   the literal arithmetic (e.g. `0.37 from correlation + 0.32 from Granger
+   evidence + 0.20 co-occurrence bonus = 0.89 total`).
+2. **Comparative ranking explanation** (`explain_ranking`) — identifies
+   *which signal* separated the top candidate from the runner-up, and flags
+   a caveat automatically when the runner-up had a co-occurring anomaly and
+   the top pick didn't (a case worth a human's second look):
+
+   ```
+   Top-ranked root cause: 'upstream_cause' (score=0.89), ahead of
+   'seasonal_decoy' (score=0.47) by 0.42. The gap is driven mainly by
+   co-occurrence: 'upstream_cause' beat 'seasonal_decoy' by 0.20 on that
+   term alone.
+   ```
+3. **Score decomposition chart** (`plot_score_decomposition`) — a stacked
+   bar per candidate showing exactly how much of its score came from each
+   signal:
+
+   ![score decomposition](root_cause_score_decomposition.png)
+
+This "exact decomposition instead of approximated attribution" property is
+also the paper-framing point in `LITERATURE_REVIEW.md` §2.5: it's the
+concrete mechanism behind the "lightweight, fully transparent" contrast
+with black-box neural RCA (AERCA) and post-hoc-XAI-wrapped deep detectors.
 
 ## Limitations
 
