@@ -21,6 +21,7 @@ Run this file directly for a demo on a synthetic series with injected
 anomalies (see `generate_synthetic_series`).
 """
 
+import os
 from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
@@ -269,7 +270,8 @@ if __name__ == "__main__":
         ax.set_ylabel("value")
         ax.legend()
         fig.tight_layout()
-        fig.savefig("time_series_anomaly_detection/demo_output.png", dpi=120)
-        print("\nSaved plot to time_series_anomaly_detection/demo_output.png")
+        out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo_output.png")
+        fig.savefig(out_path, dpi=120)
+        print(f"\nSaved plot to {out_path}")
     except ImportError:
         print("\nmatplotlib not installed - skipping plot.")

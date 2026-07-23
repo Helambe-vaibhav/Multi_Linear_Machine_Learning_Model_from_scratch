@@ -114,6 +114,62 @@ This is a strong opening for methodological contribution.
 
 ---
 
+## 2.5 Root-cause analysis for multivariate time series (chosen direction)
+
+This is the closest prior art to `root_cause_analysis.py`, and it is more
+crowded than gap #1 in §4 initially suggested — read this before framing a
+paper's contribution as "the first to do RCA for TSAD."
+
+- **AERCA** (ICLR 2025, OpenReview 6fde96479648d71e4fd9724374bf76eb) — the
+  most direct match. Frames anomalies as **interventions on exogenous
+  variables**: it jointly (a) learns Granger-causal structure among the
+  series under normal conditions and (b) models the expected distribution
+  of each series' exogenous/innovation term, then flags the variable whose
+  exogenous term deviates most as the root cause. Conceptually this is a
+  neural, distributional generalization of exactly the
+  correlation + Granger-F-test + co-occurrence combination implemented
+  here — worth reading in full before writing related work, since it will
+  likely be a required citation and possibly a baseline to beat.
+- **Neural Granger causal discovery for microservice RCA** (AAAI 2024) and
+  **"Root Cause Analysis for Microservices based on Causal Inference"**
+  (arXiv:2408.13729) — apply learned (neural) Granger causality to rank
+  which microservice metric caused an incident, in the AIOps/microservices
+  setting specifically rather than general multivariate TSAD.
+- **PyRCA** (arXiv:2306.11417, Salesforce) — an open-source library
+  bundling several classical metric-based RCA algorithms (correlation-based
+  ranking, Bayesian-network structure learning, ε-diagnosis) behind one
+  API; useful as a baseline suite and for realistic evaluation protocols,
+  though the paper itself is a systems/library paper, not a new algorithm.
+- **Causelens** (IEEE/ACM IWQoS 2025) — causality-based, explicitly
+  *interpretable* RCA for microservices; relevant if you want prior art on
+  the interpretability angle specifically, not just detection accuracy.
+- **Entropy Causal Graphs for Multivariate TSAD** (arXiv:2312.09478) and
+  **Root Cause Analysis with Latent Confounders using Partial Ancestral
+  Graphs** (arXiv:2606.20912) — address the confounder problem explicitly
+  (the same caveat in this repo's README "Limitations" section) using
+  causal-graph discovery (PC-like algorithms, ancestral graphs) instead of
+  pairwise Granger tests. This is the most direct answer to "what if two
+  candidates share a hidden common cause?" — a question pairwise Granger
+  causality (as implemented here) cannot resolve on its own.
+- **Agentic/LLM RCA systems** (KRCA arXiv:2607.01788, TopoEvo
+  arXiv:2605.15611, OpenRCA ICLR 2025) — newest wave, using multi-agent
+  LLMs over telemetry/logs/topology rather than pure time-series statistics;
+  relevant context for where the field is heading, less relevant as a
+  direct baseline for a from-scratch statistical method.
+
+**What's actually still open, given this crowd**: production-grade RCA is
+dominated by (a) black-box neural causal discovery (AERCA-style) or
+(b) LLM/agentic systems with heavy infrastructure (topology, logs). A
+**lightweight, fully transparent, pairwise-interpretable RCA method with no
+learned parameters** — every number in its output traceable to a lag, a
+correlation, an F-statistic — sits in a real gap: cheap enough to explain
+to a non-ML on-call engineer, and honest about being pairwise/correlational
+rather than a full causal graph. That transparency-vs-power tradeoff, made
+explicit and empirically measured against AERCA/PyRCA baselines, is a
+defensible framing rather than a claim of beating them on raw accuracy.
+
+---
+
 ## 3. Evaluation is arguably the field's biggest current controversy
 
 Worth a dedicated section in a paper's related work, because it affects how
@@ -176,30 +232,53 @@ contribution rather than incremental restatement of AXIS/KAN-AD.
 
 ---
 
-## 5. Suggested angles for *your* paper
+## 5. Chosen direction: Option C — root-cause analysis
 
-Given the direction of this project (lightweight, from-scratch detectors +
-plain-language explanations of anomaly *type*), a few positioning options,
-roughly cheapest → most novel:
+Status: **in progress.** `root_cause_analysis.py` now implements this angle:
+given a target series' detected anomaly and a set of candidate
+upstream/related series, it ranks candidates by combining (1) lagged
+cross-correlation, (2) a Granger-causality F-test built on plain OLS (the
+same linear-regression machinery as the repo's core notebook, applied to
+two nested multi-linear models), and (3) whether the candidate showed its
+own co-occurring anomaly. Validated on a synthetic demo with one true
+lagged cause and three adversarial decoys (shared-seasonality-only,
+unrelated-anomaly, pure-noise) — the true cause is correctly ranked first
+by a wide score margin. See `README.md` "Root-cause analysis" section for
+the full writeup and demo plot.
 
-- **A**: Empirical comparison paper — benchmark classical (z-score/IQR),
-  KAN-AD-style, and LLM-based (AXIS-style) explanations on the same data
-  under a *non-PA-F1* streaming-valid protocol, and score explanation
-  quality with a consistent rubric. Fills gap #3 + #5 directly.
-- **B**: Extend the "explanation taxonomy" (spike / level-shift /
-  volatility-change, as already implemented here) into a **rule-based,
-  fully interpretable explainer** that's cheap enough to run alongside any
-  detector (no LLM required) — a lightweight alternative to AXIS aimed at
-  latency/cost-sensitive production settings, evaluated for explanation
-  *fidelity* against AXIS's LLM-generated explanations as ground truth.
-- **C**: Attack the **root-cause gap (#1)** directly — extend point-level
-  "why is this a spike" explanations to multivariate root-cause
-  attribution (which upstream series/covariate most plausibly explains the
-  deviation), which no current paper does well.
+Per §2.5, this sits deliberately on the *lightweight/transparent* end of
+the RCA spectrum vs. AERCA (neural, distributional) and agentic/LLM
+systems (KRCA, TopoEvo) — every score component is directly attributable
+(a lag, a correlation coefficient, an F-statistic), at the cost of being
+pairwise/linear rather than a full causal graph and not handling
+confounders. That tradeoff is the paper's likely contribution framing, not
+"we detect root causes first."
 
-Happy to help draft a related-work section, build experiments for whichever
-angle you pick, or extend `anomaly_detection.py` into a testbed for
-comparison (A) or a standalone interpretable explainer (B).
+**Concrete next steps toward a paper draft:**
+1. **Real or more realistic synthetic benchmarks.** The current demo has
+   one obvious cause; a paper needs harder cases — multiple simultaneous
+   candidate causes, confounded pairs (shared hidden driver), mediator
+   chains (A causes B causes target), and no-clean-answer cases. Consider
+   adapting AERCA's or PyRCA's evaluation datasets for a head-to-head
+   comparison.
+2. **Confounder handling.** Right now this is pairwise Granger — add a
+   partial/conditional variant (control for other candidates when testing
+   each pair) as an ablation, and cite the ancestral-graph line
+   (arXiv:2606.20912) as the "what a full solution would need" contrast.
+3. **Evaluation metric for RCA itself**: precision@1 / precision@k of the
+   ranked candidate list against known ground-truth causes (used in
+   AERCA/PyRCA-style papers) — decide this before running experiments so
+   results are comparable to baselines.
+4. **Baselines to run against**: at minimum, plain (lag-0) correlation
+   ranking and PyRCA's bundled methods, to demonstrate the lagged/Granger
+   combination's marginal value over naive correlation.
+5. **Ablations**: score with each of the three signals alone vs. combined,
+   to justify the combination rather than asserting it.
+
+Happy to help draft the related-work section around §2.5, design the
+harder synthetic benchmarks (confounders/mediators) for step 1, or extend
+`root_cause_analysis.py` with a conditional/partial-Granger variant for
+step 2.
 
 ---
 
@@ -244,6 +323,23 @@ comparison (A) or a standalone interpretable explainer (B).
   arXiv:2510.17562 — https://arxiv.org/html/2510.17562v1
 - *A Reliable Framework for Human-in-the-Loop Anomaly Detection in Time
   Series*, arXiv:2405.03234 — https://arxiv.org/pdf/2405.03234
+- **AERCA**: *Root Cause Analysis of Anomalies in Multivariate Time Series
+  through Granger Causal Discovery*, ICLR 2025 —
+  https://proceedings.iclr.cc/paper_files/paper/2025/hash/6fde96479648d71e4fd9724374bf76eb-Abstract-Conference.html
+- *Root Cause Analysis for Microservices based on Causal Inference*,
+  arXiv:2408.13729 — https://arxiv.org/pdf/2408.13729
+- PyRCA: *A Library for Metric-based Root Cause Analysis*, arXiv:2306.11417
+  — https://arxiv.org/pdf/2306.11417
+- *Entropy Causal Graphs for Multivariate Time Series Anomaly Detection*,
+  arXiv:2312.09478 — https://arxiv.org/pdf/2312.09478
+- *Root Cause Analysis with Latent Confounders using Partial Ancestral
+  Graphs*, arXiv:2606.20912 — https://arxiv.org/pdf/2606.20912
+- KRCA: *An Efficient Root Cause Analysis System in Hyper-Scale
+  Microservice Systems via Agentic AI*, arXiv:2607.01788 —
+  https://arxiv.org/pdf/2607.01788
+- TopoEvo: *A Topology-Aware Self-Evolving Multi-Agent Framework for Root
+  Cause Analysis in Microservices*, arXiv:2605.15611 —
+  https://arxiv.org/pdf/2605.15611
 - Curated lists: [Awesome-Anomaly-Detection-Foundation-Models](https://github.com/mala-lab/Awesome-Anomaly-Detection-Foundation-Models),
   [Awesome-Time-Series-Explainability](https://github.com/JHoelli/Awesome-Time-Series-Explainability)
 
