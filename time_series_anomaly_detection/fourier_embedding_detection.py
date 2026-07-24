@@ -38,19 +38,33 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 # 1. Adaptive window size: period of the series' dominant Fourier frequency
 # ---------------------------------------------------------------------------
-def estimate_period_via_fourier(series, min_period: int = 8, max_period_frac: float = 0.25) -> int:
+def estimate_period_via_fourier(series, min_period: int = 8, max_period_frac: float = 0.1) -> int:
     """
     Returns a data-driven window size: the period (in samples) of the
     strongest non-trivial frequency component in `series`, clipped to
     [min_period, len(series) * max_period_frac] so it can't collapse to
     the whole series (from a near-DC trend) or to a handful of points
     (from high-frequency noise).
+
+    Linearly detrends (not just mean-removes) and applies a Hann taper
+    before the FFT: a slow drift/trend that isn't perfectly removed by mean
+    subtraction alone leaks energy into the lowest frequency bins, which
+    can otherwise get mistaken for a genuine (and enormous, near-max_period)
+    "dominant period" - e.g. this produced a ~60,000-sample "period" on a
+    ~300,000-point real series that had no such periodicity, just drift.
+    `max_period_frac` is deliberately tighter (0.1, not 0.25) for the same
+    reason: a handful of genuinely periodic cycles should fit comfortably
+    within 10% of the series length for any series long enough to matter.
     """
     values = np.asarray(series, dtype=float)
-    values = values - values.mean()
     n = len(values)
 
-    spectrum = np.abs(np.fft.rfft(values))
+    t = np.arange(n)
+    slope, intercept = np.polyfit(t, values, 1)
+    detrended = values - (slope * t + intercept)
+    tapered = detrended * np.hanning(n)
+
+    spectrum = np.abs(np.fft.rfft(tapered))
     freqs = np.fft.rfftfreq(n)  # cycles per sample
 
     max_period = max(min_period + 1, int(n * max_period_frac))
@@ -70,7 +84,7 @@ def estimate_period_via_fourier(series, min_period: int = 8, max_period_frac: fl
 # ---------------------------------------------------------------------------
 # 2. Fourier embedding of every window, fully vectorized
 # ---------------------------------------------------------------------------
-def embed_all_windows(series, m: int, n_coeffs: int = 12, max_windows: int = 30000):
+def embed_all_windows(series, m: int, n_coeffs: int = 12, max_windows: int = 30000, max_elements: int = 50_000_000):
     """
     Returns (positions, embeddings, flat_mask): embeddings[i] is the
     Fourier-magnitude embedding of series[positions[i]:positions[i]+m]
@@ -79,20 +93,22 @@ def embed_all_windows(series, m: int, n_coeffs: int = 12, max_windows: int = 300
     once z-normalized) so callers can exclude them from scoring.
 
     `sliding_window_view` itself is a zero-copy view, so building it over
-    the WHOLE series is free regardless of length; but a long series with
-    a large auto-selected `m` (e.g. a 900,000-point series with m~1500)
-    would still materialize a many-GB dense array the moment any
-    arithmetic (mean/std/FFT) runs on it. To keep memory and runtime
-    bounded regardless of series length, positions are subsampled with a
-    stride BEFORE any arithmetic happens (slicing a view with a step is
-    itself still a view - only the final `max_windows`-sized subset ever
-    gets materialized).
+    the WHOLE series is free regardless of length; but arithmetic
+    (mean/std/znorm/tapered/FFT) on the sampled subset materializes several
+    dense (n_sampled, m) arrays. Bounding `n_sampled` alone (max_windows)
+    is NOT enough - a large auto-selected `m` blows up the same way (e.g. a
+    ~300,000-point series once produced m~60,000, so even 30,000 sampled
+    rows at that width would need tens of GB). The number of sampled
+    windows is therefore capped by BOTH max_windows AND max_elements/m, so
+    total materialized size (n_sampled * m) stays bounded regardless of
+    how large either n or m turns out to be.
     """
     values = np.asarray(series, dtype=float)
     all_windows = np.lib.stride_tricks.sliding_window_view(values, m)  # (n-m+1, m), zero-copy view
     n_total = all_windows.shape[0]
 
-    stride = max(1, int(np.ceil(n_total / max_windows)))
+    effective_max_windows = max(1, min(max_windows, max_elements // max(m, 1)))
+    stride = max(1, int(np.ceil(n_total / effective_max_windows)))
     windows = all_windows[::stride]  # still a view - no copy yet
     positions = np.arange(0, n_total, stride)
 
