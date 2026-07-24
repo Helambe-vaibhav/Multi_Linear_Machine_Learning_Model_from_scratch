@@ -297,25 +297,47 @@ recall. **Root-cause validation on real multivariate data is still open**
 (SMD, MSAP/MSL, or PSM — all have multiple correlated sensor channels and
 are used as AERCA/PyRCA baselines).
 
-**Fifth detector added (3-dataset pilot, not yet the full 250):**
+**Fifth detector added and now validated on the full 250-file archive.**
 `fourier_embedding_detection.py` addresses shape discord's biggest named
 weakness — a hand-picked fixed window length `m` — by setting `m` from
 the period of the series' own dominant FFT frequency, then embedding every
 window as its z-normalized Fourier-magnitude spectrum and visualizing
 normal-vs-anomaly separation via a from-scratch PCA (plain
-`numpy.linalg.svd`). On the 3-file pilot (chosen to include one file each
-where point-based and shape-discord methods previously agreed or
-disagreed): 2/3 hits, and critically, it **disagrees with shape discord in
-both directions** — it catches `008_CIMIS44AirTemperature4` (which
-fixed-window shape discord missed) but misses `001_sddb40` (which shape
-discord caught via its exact nearest-neighbor search). This extends the
-complementarity finding one level deeper: it's not just "point-based vs.
-shape-based," but *which specific shape-comparison mechanism* you use
-also changes which anomalies you catch. This is real evidence for an
-ensemble-of-detector-families argument in the paper, but it's only 3
-files — running this across the full 250-file archive (same as
-`evaluate_ucr.py` does for the other four detectors) is the immediate next
-step before any hit-rate number here is citable.
+`numpy.linalg.svd`). The initial 3-file pilot (2/3 hits) motivated a full
+run, which is now the strongest result in the project:
+
+**34.8% (87/250) top-1 hit rate — the best of all five detectors, by a
+statistically significant margin.** Paired McNemar's tests (same 250
+files under each method) confirm this isn't noise: Fourier embedding vs.
+trend-residual (best point-based method) gives χ²=43.5, p<0.0001; vs.
+shape discord gives χ²=14.6, p=0.0001. Combining all five methods ("any
+agrees") reaches 50.8% (127/250) — the first time more than half the
+archive is caught by at least one method. Only 3 of 250 files had all
+five agree, meaning the five detectors still disagree almost completely
+about *which* points are anomalous even though each clears chance by a
+wide margin individually. 49 files were caught *only* by Fourier
+embedding. Category breakdown explains why: it jumps to 81.3% on ECG,
+84.6% on InternalBleeding, 80% on GP, 66.7% on CIMIS — domains with strong
+natural periodicity, exactly what an FFT-derived window size and spectral
+embedding are built to exploit — but scores 0% on non-periodic-dominant
+domains (gait, apneaecg, taichidbS, tilt).
+
+Two engineering notes worth keeping for the paper's methods section: (1)
+a naive implementation of "auto window size from FFT" crashed via OOM on
+a real file (a ~300k-point series produced a spurious ~60,000-sample
+"period" from trend leakage into low-frequency bins) — fixed by linearly
+detrending and Hann-tapering before the period-estimation FFT, plus
+bounding memory by BOTH sample count and window length, not just sample
+count. This is a genuinely useful cautionary result: "auto-selected
+window/scale hyperparameters need their own robustness testing" is a
+citable methods point, not just a debugging footnote. (2) The correct
+comparison for "is method A really better than method B" here is a
+**paired** test (McNemar), not comparing confidence intervals by eye —
+this is exactly the kind of evaluation rigor the field's own literature
+(§3) criticizes TSAD papers for skipping.
+
+Full writeup, statistical tests, and category breakdown are in
+README.md's "Real-world validation" section.
 
 **Concrete next steps toward a paper draft:**
 1. **Real or more realistic synthetic benchmarks.** The current demo has

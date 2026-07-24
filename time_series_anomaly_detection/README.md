@@ -396,34 +396,25 @@ cloud in this embedding, with only a small tail poking out:
 
 ![Fourier embedding diff - ECG sddb40](fourier_embedding_001.png)
 
-### 3. Results on 3 datasets (as requested - not yet run on the full 250)
+### 3. Results: 3-file pilot, then the full 250-file archive
 
 An `embedding_distance_detector` scores each window by its standardized
 distance to the *train-region-only* reference embedding (never touching
 test/anomaly data, so no leakage), and picks the highest-scoring test
-window as its top-1 guess:
+window as its top-1 guess. The initial 3-file pilot (2/3 hits, disagreeing
+with shape discord in both directions - see git history for the original
+per-file writeup) motivated running this properly on the full archive via
+`evaluate_ucr.py`, integrated as a fifth detector alongside the other four.
 
-| File | Auto `m` | Top-1 hit? | Compare to shape discord |
-|---|---|---|---|
-| `001_..._sddb40` | 213 | ❌ Miss (off by ~2,104) | Shape discord **hit** this one |
-| `004_..._BIDMC1` | 82 | ✅ Hit | Shape discord also hit this one |
-| `008_..._CIMIS44AirTemperature4` | 24 | ✅ Hit | Shape discord **missed** this one |
+**That full run is now in and is the headline result of this whole
+project so far: 34.8% (87/250), the best of all five detectors by a wide
+and statistically significant margin.** See "Real-world validation" below
+for the complete numbers, statistical tests, and category breakdown -
+this 3-dataset section is kept only as the original pilot record.
 
-**Honest interpretation**: 2 of 3, and — notably — it disagrees with shape
-discord on the two harder files in *opposite* directions. It catches
-`008` (the case shape discord's fixed `m=100` couldn't resolve, matching
-the intuition that a domain-appropriate window size matters), but it
-misses `001` (the case shape discord's exact nearest-neighbor exclusion-zone
-search catches and this coarser PCA-distance approach doesn't fully
-separate). This is the same complementarity story as point-based vs.
-shape-based detectors, one level deeper: even within "shape-aware"
-methods, *how* you compare shapes (exact nearest-neighbor distance vs.
-frequency-domain embedding + distance-to-reference) changes which
-anomalies you catch. This is a 3-file pilot, not a benchmark claim — a
-full 250-file run is the natural next step before citing a hit rate in a
-paper.
-
-Reproduce: `python3 fourier_embedding_detection.py path/to/ucr_data`.
+Reproduce: `python3 fourier_embedding_detection.py path/to/ucr_data` (3-file
+pilot) or `python3 evaluate_ucr.py path/to/ucr_data` (full archive, all 5
+detectors).
 
 ## Real-world validation: the UCR Anomaly Archive (`evaluate_ucr.py`)
 
@@ -449,45 +440,54 @@ inside the labeled anomaly interval - a **top-1 hit rate**, the same
 protocol this specific archive's own literature uses (e.g. MERLIN, Matrix
 Profile discord papers). This can't be inflated by flagging lots of points.
 
-### Results (full 250-file run, all four detectors)
+### Results (full 250-file run, all five detectors)
 
-| Detector | Top-1 hit rate |
-|---|---|
-| Rolling Z-Score | 10.0% (25/250) |
-| Rolling IQR | 6.0% (15/250) |
-| Trend-Residual Z-Score | 10.8% (27/250) |
-| **Shape Discord** | **20.4% (51/250)** |
-| Any of the 3 point-based methods agrees | 16.8% (42/250) |
-| **Any of all 4 methods agrees** | **31.2% (78/250)** |
-| All 4 agree | 1.6% (4/250) |
-| *(random-guess baseline)* | *0.84%* |
+| Detector | Top-1 hit rate | 95% Wilson CI |
+|---|---|---|
+| Rolling Z-Score | 10.0% (25/250) | [6.9%, 14.3%] |
+| Rolling IQR | 6.0% (15/250) | [3.7%, 9.7%] |
+| Trend-Residual Z-Score | 10.8% (27/250) | [7.5%, 15.3%] |
+| Shape Discord | 20.4% (51/250) | [15.9%, 25.8%] |
+| **Fourier Embedding** | **34.8% (87/250)** | **[29.2%, 40.9%]** |
+| Any of all 5 methods agrees | 50.8% (127/250) | [44.6%, 56.9%] |
+| All 5 agree | 1.2% (3/250) | — |
+| *(random-guess baseline)* | *0.84%* | — |
 
-**Headline result**: adding the shape discord detector nearly doubles the
-best single point-based detector's hit rate (20.4% vs. 10.8%), and
-combining all four ("any agrees") reaches 31.2% - almost 2x the point-only
-ensemble (16.8%). That combined number is the more honest one to quote:
-no single method dominates, and the gain comes from *complementarity*, not
-from shape discord being categorically better.
+**Headline result**: Fourier embedding (adaptive window size + spectral
+shape embedding, from the previous request) is the single best detector
+found so far - more than 3x the best point-based method and nearly 2x
+shape discord. This isn't a marginal or noisy difference: a paired
+McNemar's test (same 250 files, so each file's own outcome under both
+methods is compared directly) shows Fourier embedding beating
+trend-residual (χ²=43.5, **p<0.0001**) and beating shape discord (χ²=14.6,
+**p=0.0001**). Combining all five ("any agrees") reaches **50.8%** - for
+the first time, more than half the archive is caught by at least one
+method, though that number should be read as "the ceiling of this
+detector family," not a single deployable system.
 
-**The complementarity, precisely**: of the 250 files,
-- **36 were caught *only* by shape discord** — every point-based method
-  missed them (mostly ECG, apnea-ECG, InternalBleeding, qtdbSel, gaitHunt
-  files: morphology changes invisible to value-based rolling stats).
-- **27 were caught *only* by a point-based method** — shape discord missed
-  them (e.g. most of `CIMIS`, `GP`, `Lab`, `STAFFIIIDatabase`,
-  `CHARISten`: cases where the anomaly *is* closer to a value-level shift
-  that the fixed subsequence length `m=100` doesn't resolve well, or where
-  a spike genuinely is the simplest description of what happened).
-- Only 4 files had all four methods agree.
+**Complementarity is still the deeper finding, not just a bigger number**:
+- **49 files were caught *only* by Fourier embedding** - every other
+  method (including shape discord) missed them.
+- Only **3 of 250 files** had all five methods agree - near-total
+  disagreement about *which* points are anomalous, even though each
+  method independently beats chance by a wide, significant margin.
+- Domain breakdown shows *why* Fourier embedding wins so much: `ECG`
+  jumped from 12.5% (trend-residual) to **81.3%**; `InternalBleeding` from
+  15.4% to **84.6%**; `GP` from 20% to **80%**; `CIMIS` from 16.7% to
+  **66.7%** - all domains with strong natural periodicity, which is
+  exactly what a per-series Fourier-derived window size and spectral
+  embedding are built to exploit. But it scores **0%** on `gait`,
+  `apneaecg`, `taichidbS`, `tilt`, `sddb`, `weallwalk` - domains without a
+  clean dominant frequency, where the "auto window size" assumption
+  itself doesn't fit.
 
-This is the honest story for a paper: **point-value and shape-based
-detection catch structurally different failure modes**, and this dataset
-alone won't let you declare a single "winner" — it argues for running both
-families and combining their outputs, not for replacing one with the
-other. Domain matters a lot too: `apneaecg` jumped from 0% (trend-residual)
-to 75% (shape discord); `qtdbSel` went from 0% to 100%; but `STAFFIIIDatabase`
-and `CHARISten` went the other way (11%/33% down to 0%) once switching to
-shape comparison at a fixed window length.
+**The honest takeaway for a paper**: don't report "Fourier embedding wins."
+Report "detector choice should match the anomaly's underlying structure -
+periodic/spectral anomalies favor Fourier embedding, morphology-without-
+periodicity favors shape discord, and value-level shifts favor point-based
+methods - and an ensemble across all three families catches meaningfully
+more than any one of them, currently topping out at 50.8% on this
+deliberately hard archive."
 
 **Hit example** (`004_UCR_Anomaly_DISTORTEDBIDMC1`, an ECG-like signal) -
 the anomaly is a shape distortion in one beat, small enough to be invisible
