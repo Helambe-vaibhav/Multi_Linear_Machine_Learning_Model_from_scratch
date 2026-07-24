@@ -35,6 +35,7 @@ import pandas as pd
 
 from anomaly_detection import rolling_zscore_detector, rolling_iqr_detector, trend_residual_detector
 from shape_discord_detection import shape_discord_detector
+from fourier_embedding_detection import estimate_period_via_fourier, embedding_distance_detector
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FILENAME_RE = re.compile(r"^(\d+)_UCR_Anomaly_(.+)_(\d+)_(\d+)_(\d+)\.txt$")
@@ -47,6 +48,7 @@ DETECTORS = {
 
 SHAPE_M = 100
 SHAPE_MAX_QUERIES = 1000
+FOURIER_MAX_WINDOWS = 30000
 
 
 def parse_filename(filename: str) -> dict:
@@ -64,7 +66,7 @@ def load_series(path: str) -> pd.Series:
     return pd.Series(np.loadtxt(path))
 
 
-def evaluate_file(path: str, filename: str, include_shape: bool = True) -> dict:
+def evaluate_file(path: str, filename: str, include_shape: bool = True, include_fourier: bool = True) -> dict:
     meta = parse_filename(filename)
     series = load_series(path)
     test_index = series.index[meta["train_size"]:]
@@ -100,6 +102,22 @@ def evaluate_file(path: str, filename: str, include_shape: bool = True) -> dict:
         else:
             row["shape_discord_hit"] = False
             row["shape_discord_top1_index"] = None
+
+    if include_fourier:
+        m = estimate_period_via_fourier(series)
+        positions, scores = embedding_distance_detector(
+            series, m, train_size=meta["train_size"], max_windows=FOURIER_MAX_WINDOWS
+        )
+        test_mask = positions >= meta["train_size"]
+        if test_mask.any() and np.nanmax(scores[test_mask]) > 0:
+            top1_pos = int(positions[test_mask][np.argmax(scores[test_mask])])
+            hit = meta["anomaly_start"] <= top1_pos + m - 1 and top1_pos <= meta["anomaly_end"]
+            row["fourier_embedding_hit"] = bool(hit)
+            row["fourier_embedding_top1_index"] = top1_pos
+        else:
+            row["fourier_embedding_hit"] = False
+            row["fourier_embedding_top1_index"] = None
+        row["fourier_embedding_m"] = m
 
     return row
 
@@ -155,7 +173,7 @@ def print_summary(df: pd.DataFrame) -> None:
     n_total = len(df)
     n_errors = df["error"].notna().sum() if "error" in df.columns else 0
     print(f"Files evaluated: {n_total} ({n_errors} failed to parse/load)")
-    for det_name in list(DETECTORS) + ["shape_discord"]:
+    for det_name in list(DETECTORS) + ["shape_discord", "fourier_embedding"]:
         col = f"{det_name}_hit"
         if col in df.columns:
             valid = df[col].notna()

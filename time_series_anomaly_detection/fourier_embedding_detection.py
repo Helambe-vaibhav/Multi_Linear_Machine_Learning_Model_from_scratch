@@ -70,16 +70,31 @@ def estimate_period_via_fourier(series, min_period: int = 8, max_period_frac: fl
 # ---------------------------------------------------------------------------
 # 2. Fourier embedding of every window, fully vectorized
 # ---------------------------------------------------------------------------
-def embed_all_windows(series, m: int, n_coeffs: int = 12):
+def embed_all_windows(series, m: int, n_coeffs: int = 12, max_windows: int = 30000):
     """
-    Returns (embeddings, flat_mask): embeddings[i] is the Fourier-magnitude
-    embedding of series[i:i+m] (z-normalized and Hann-tapered first), for
-    every i in one batched FFT call. flat_mask[i] marks windows with ~zero
-    variance (undefined shape once z-normalized) so callers can exclude
-    them from scoring.
+    Returns (positions, embeddings, flat_mask): embeddings[i] is the
+    Fourier-magnitude embedding of series[positions[i]:positions[i]+m]
+    (z-normalized and Hann-tapered first), computed via one batched FFT
+    call. flat_mask[i] marks windows with ~zero variance (undefined shape
+    once z-normalized) so callers can exclude them from scoring.
+
+    `sliding_window_view` itself is a zero-copy view, so building it over
+    the WHOLE series is free regardless of length; but a long series with
+    a large auto-selected `m` (e.g. a 900,000-point series with m~1500)
+    would still materialize a many-GB dense array the moment any
+    arithmetic (mean/std/FFT) runs on it. To keep memory and runtime
+    bounded regardless of series length, positions are subsampled with a
+    stride BEFORE any arithmetic happens (slicing a view with a step is
+    itself still a view - only the final `max_windows`-sized subset ever
+    gets materialized).
     """
     values = np.asarray(series, dtype=float)
-    windows = np.lib.stride_tricks.sliding_window_view(values, m)  # (n-m+1, m)
+    all_windows = np.lib.stride_tricks.sliding_window_view(values, m)  # (n-m+1, m), zero-copy view
+    n_total = all_windows.shape[0]
+
+    stride = max(1, int(np.ceil(n_total / max_windows)))
+    windows = all_windows[::stride]  # still a view - no copy yet
+    positions = np.arange(0, n_total, stride)
 
     mean = windows.mean(axis=1, keepdims=True)
     std = windows.std(axis=1, keepdims=True)
@@ -92,7 +107,7 @@ def embed_all_windows(series, m: int, n_coeffs: int = 12):
 
     n_coeffs = min(n_coeffs, spectrum.shape[1] - 1)
     embeddings = spectrum[:, 1:n_coeffs + 1]  # drop the DC bin (z-norm already removed the mean)
-    return embeddings, flat_mask
+    return positions, embeddings, flat_mask
 
 
 # ---------------------------------------------------------------------------
@@ -129,16 +144,15 @@ def plot_embedding_diff(positions, embeddings_2d, m, anomaly_start, anomaly_end,
 #    embedding to the "normal" reference distribution (fit on the
 #    train-only region, never on test-region/anomaly data - no leakage).
 # ---------------------------------------------------------------------------
-def embedding_distance_detector(series, m: int, train_size: int, n_coeffs: int = 12):
+def embedding_distance_detector(series, m: int, train_size: int, n_coeffs: int = 12, max_windows: int = 30000):
     """
-    Returns (positions, scores): for every window position, its
-    standardized Euclidean distance to the mean Fourier embedding of the
-    TRAIN region only (archive convention: train region is anomaly-free).
-    Large distance = shape unlike anything seen in the reference/normal
-    period.
+    Returns (positions, scores): for every (possibly subsampled) window
+    position, its standardized Euclidean distance to the mean Fourier
+    embedding of the TRAIN region only (archive convention: train region is
+    anomaly-free). Large distance = shape unlike anything seen in the
+    reference/normal period.
     """
-    embeddings, flat_mask = embed_all_windows(series, m, n_coeffs)
-    positions = np.arange(len(embeddings))
+    positions, embeddings, flat_mask = embed_all_windows(series, m, n_coeffs, max_windows=max_windows)
 
     train_end = max(1, train_size - m + 1)
     train_mask = (positions < train_end) & (~flat_mask)
@@ -189,7 +203,7 @@ def run_on_three_datasets(data_dir: str):
         print(f"  true anomaly=[{anomaly_start},{anomaly_end}], top-1 guess at position {top1_pos} "
               f"(covers [{top1_pos},{top1_pos + m - 1}]) -> {'HIT' if hit else 'MISS'}")
 
-        embeddings, flat_mask = embed_all_windows(series, m)
+        _, embeddings, flat_mask = embed_all_windows(series, m)
         embeddings_2d = pca_2d(embeddings)
         plot_path = os.path.join(_HERE, f"fourier_embedding_{filename.split('_UCR_')[0]}.png")
         plot_embedding_diff(positions, embeddings_2d, m, anomaly_start, anomaly_end, plot_path,
