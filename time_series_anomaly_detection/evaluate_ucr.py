@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 from anomaly_detection import rolling_zscore_detector, rolling_iqr_detector, trend_residual_detector
+from shape_discord_detection import shape_discord_detector
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FILENAME_RE = re.compile(r"^(\d+)_UCR_Anomaly_(.+)_(\d+)_(\d+)_(\d+)\.txt$")
@@ -43,6 +44,9 @@ DETECTORS = {
     "iqr": lambda s: rolling_iqr_detector(s, window=100, k=3.0),
     "trend_residual": lambda s: trend_residual_detector(s, trend_window=100, z_window=100, threshold=4.0),
 }
+
+SHAPE_M = 100
+SHAPE_MAX_QUERIES = 1000
 
 
 def parse_filename(filename: str) -> dict:
@@ -60,7 +64,7 @@ def load_series(path: str) -> pd.Series:
     return pd.Series(np.loadtxt(path))
 
 
-def evaluate_file(path: str, filename: str) -> dict:
+def evaluate_file(path: str, filename: str, include_shape: bool = True) -> dict:
     meta = parse_filename(filename)
     series = load_series(path)
     test_index = series.index[meta["train_size"]:]
@@ -82,6 +86,20 @@ def evaluate_file(path: str, filename: str) -> dict:
         hit = meta["anomaly_start"] <= top1_idx <= meta["anomaly_end"]
         row[f"{det_name}_hit"] = bool(hit)
         row[f"{det_name}_top1_index"] = top1_idx
+
+    if include_shape:
+        candidate_positions = range(meta["train_size"], len(series) - SHAPE_M)
+        discords = shape_discord_detector(
+            series, m=SHAPE_M, max_queries=SHAPE_MAX_QUERIES, candidate_positions=candidate_positions
+        )
+        if discords:
+            top = discords[0]
+            hit = meta["anomaly_start"] <= top.position <= meta["anomaly_end"]
+            row["shape_discord_hit"] = bool(hit)
+            row["shape_discord_top1_index"] = top.position
+        else:
+            row["shape_discord_hit"] = False
+            row["shape_discord_top1_index"] = None
 
     return row
 
@@ -137,7 +155,7 @@ def print_summary(df: pd.DataFrame) -> None:
     n_total = len(df)
     n_errors = df["error"].notna().sum() if "error" in df.columns else 0
     print(f"Files evaluated: {n_total} ({n_errors} failed to parse/load)")
-    for det_name in DETECTORS:
+    for det_name in list(DETECTORS) + ["shape_discord"]:
         col = f"{det_name}_hit"
         if col in df.columns:
             valid = df[col].notna()
