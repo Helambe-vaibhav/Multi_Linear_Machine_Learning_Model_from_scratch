@@ -15,14 +15,17 @@ explicit and readable.
 |---|---|
 | `anomaly_detection.py` | Detectors + point-level explanation logic + a runnable demo |
 | `demo_output.png` | Example plot produced by running the anomaly detection demo |
+| `changepoint_detection.py` | CUSUM changepoint test backing the `level_shift` explanation |
 | `root_cause_analysis.py` | Multivariate root-cause ranking + explainability + a runnable demo |
 | `root_cause_demo_output.png` | Time series plot from the root-cause demo |
 | `root_cause_score_decomposition.png` | Score-attribution chart from the root-cause demo |
-| `shape_discord_detection.py` | Shape-based (Matrix Profile / discord) detector + "diff pattern" plots + a runnable demo |
+| `shape_discord_detection.py` | Shape-based (Matrix Profile / discord) detector + "diff pattern" and occlusion-attribution plots + a runnable demo |
 | `shape_discord_demo_pattern.png` | Synthetic shape-only anomaly the point detectors miss entirely |
+| `shape_discord_demo_occlusion.png` | Occlusion attribution on the synthetic shape anomaly |
+| `ucr_occlusion_001.png` | Occlusion attribution on real UCR data |
 | `fourier_embedding_detection.py` | Adaptive window size (dominant Fourier period) + Fourier-embedding PCA "diff embedding" plots |
 | `fourier_embedding_001.png` / `_004.png` / `_008.png` | Diff-embedding plots for the 3-dataset pilot |
-| `evaluate_ucr.py` | Real-world validation against the UCR Anomaly Archive (all 4 detectors) |
+| `evaluate_ucr.py` | Real-world validation against the UCR Anomaly Archive (all 5 detectors) |
 | `ucr_evaluation_results.csv` | Per-file results from the full 250-file UCR run |
 | `ucr_example_hit.png` / `ucr_example_miss.png` | Illustrative real-data hit/miss cases (point-based detectors) |
 | `ucr_shape_pattern_001.png` | Shape-discord "diff pattern" for the file all point-based detectors missed |
@@ -120,9 +123,15 @@ trend or seasonal cycle, which a plain z-score can mistake for anomalies.
 For every flagged point, `_classify_reason()` compares the local window
 **before** and **after** the point to decide which shape of anomaly it is:
 
-- If the mean level *before* vs. *after* the point differs by more than
-  ~2 local standard deviations and persists → **`level_shift`**
-  ("the baseline moved — likely a real regime change").
+- A **CUSUM changepoint test** (`changepoint_detection.py`) scans the
+  window after the point for a *sustained* shift away from the baseline
+  established before it. If confirmed (cumulative-sum statistic exceeds a
+  standard threshold, not an ad hoc "2x" heuristic) → **`level_shift`**
+  ("the baseline moved — likely a real regime change"), and the CUSUM
+  itself pinpoints where the shift actually started (which can differ
+  from the flagged index) rather than assuming it starts exactly there.
+  See "Rigorous changepoint detection" below for why this replaced the
+  original heuristic mean-before-vs-after comparison.
 - Else if the local variance before vs. after changes sharply (more than
   ~2.5x or less than ~0.4x) → **`volatility_change`**
   ("the series got noisier/calmer — likely instability in the source").
@@ -151,6 +160,50 @@ injected anomalies: a spike, a dip, and a level shift) correctly recovers
 all three and classifies them by type:
 
 ![demo output](demo_output.png)
+
+## Rigorous changepoint detection (`changepoint_detection.py`)
+
+The original `level_shift` classification was a bare heuristic: "does the
+mean after the point differ from the mean before by more than 2 local
+standard deviations?" That's a single snapshot comparison with no
+statistical grounding - no real confidence level, and no attempt to find
+*where* within the window the shift actually began (it just assumed the
+shift starts exactly at the flagged point).
+
+**CUSUM** (cumulative sum control chart) replaces this with a proper
+sequential test: it accumulates evidence of a *sustained* shift over the
+whole window, rather than comparing two single averages. Two one-sided
+sums are tracked over the region after the flagged point (using the region
+before it only to estimate the baseline mean/std):
+
+```
+S+_t = max(0, S+_{t-1} + z_t - k)      (evidence of a sustained upward shift)
+S-_t = max(0, S-_{t-1} - z_t - k)      (evidence of a sustained downward shift)
+```
+
+where `z_t` is the standardized value and `k` (default 0.5) is the
+"allowance" - how much drift the test tolerates before it starts counting.
+A level shift is confirmed only if `S+` or `S-` exceeds a threshold `h`
+(default 5.0, a standard CUSUM value with well-documented false-alarm
+rates - see e.g. Montgomery's *Introduction to Statistical Quality
+Control*), which also gives a genuine confidence statistic instead of an
+arbitrary "2x" cutoff. Critically, `S+`/`S-` reset to zero whenever they'd
+go negative, so **the index where the peak run began is itself the
+CUSUM's changepoint location estimate** - not necessarily the same as the
+originally-flagged point.
+
+On the synthetic level-shift example (injected at t=260), the CUSUM
+statistic reaches 39.54 (threshold 5.0 - a large margin, not a borderline
+call) and locates the changepoint at t=261, one step from the true
+injection point:
+
+```
+CUSUM confirms a sustained shift up starting at index 261
+(cumulative-sum statistic=39.54, threshold=5.0; mean before=32.79 ->
+mean after=45.70); this is a regime change / structural break, not a
+one-off blip - the shift persists across the whole window, not just at
+the flagged point.
+```
 
 ## Usage on your own data
 
@@ -349,6 +402,37 @@ should be near-identical if the pattern were normal, diverging sharply
 where the anomaly is. The distance in the title is literally the discord
 score - the z-normalized Euclidean distance between the two curves.
 
+### Occlusion attribution: *which part* of the window is actually anomalous
+
+A 200-point discord's distance score could come from 10 points or from all
+200 - `plot_pattern_comparison` shows the whole window is different, but
+not where inside it. `occlusion_attribution()` answers this directly: split
+the window into `n_segments` equal parts, and for each, replace *just that
+segment* with the corresponding segment from the nearest-neighbor
+("normal") window, then re-measure the z-normalized distance to that
+neighbor. A segment whose replacement sharply reduces the distance was a
+major contributor; one that barely changes anything was already
+normal-looking on its own. No approximation or surrogate model is needed
+- each segment's contribution is measured directly by literally patching
+it and re-scoring, the same exact z-normalized distance formula the
+detector itself uses.
+
+On the synthetic shape-only anomaly (frequency-doubled cycle), the two
+segments right at the start of the distortion account for most of the
+discord score (0.97 and 1.30 out of a 5.70 total), while segments past
+the point where the two curves happen to resync contribute ~0:
+
+![occlusion attribution demo](shape_discord_demo_occlusion.png)
+
+On the real UCR file (`001_UCR_Anomaly_DISTORTED1sddb40`), it correctly
+isolates the *two* regions where the anomalous ECG beat and its nearest
+normal match actually diverge (the initial mismatch around position 0-20,
+and the extra dip around position 140-180 visible in the pattern-
+comparison plot earlier) while assigning near-zero attribution to the
+middle of the window, where the two curves already track closely:
+
+![occlusion attribution on real UCR data](ucr_occlusion_001.png)
+
 ## Fourier-embedding detection: adaptive window size + "diff embeddings" (`fourier_embedding_detection.py`)
 
 Shape discord detection (above) fixes the "point vs. shape" gap, but
@@ -420,15 +504,15 @@ detectors).
 
 Everything above was validated on synthetic data with known, injected
 anomalies - useful for confirming the logic works, but synthetic anomalies
-are easy by construction. `evaluate_ucr.py` runs all four detectors -
-three point-based (`anomaly_detection.py`) plus the shape-based discord
-detector (`shape_discord_detection.py`) - against the **UCR Anomaly
-Archive** (Keogh et al.; see Wu & Keogh, *"Current Time Series Anomaly
-Detection Benchmarks are Flawed"*, 2021) — 250 real series (ECG,
-respiration, gait, air temperature, power demand, insect EPG, MARS rover
-telemetry, etc.), each with exactly one labeled anomaly interval. It's one
-of the nine benchmarks named across the surveys in `LITERATURE_REVIEW.md`
-§1.
+are easy by construction. `evaluate_ucr.py` runs all five detectors -
+three point-based (`anomaly_detection.py`), the shape-based discord
+detector (`shape_discord_detection.py`), and the Fourier-embedding detector
+(`fourier_embedding_detection.py`) - against the **UCR Anomaly Archive**
+(Keogh et al.; see Wu & Keogh, *"Current Time Series Anomaly Detection
+Benchmarks are Flawed"*, 2021) — 250 real series (ECG, respiration, gait,
+air temperature, power demand, insect EPG, MARS rover telemetry, etc.),
+each with exactly one labeled anomaly interval. It's one of the nine
+benchmarks named across the surveys in `LITERATURE_REVIEW.md` §1.
 
 The archive is not bundled in this repo (330MB+ across 250 files) - see the
 docstring at the top of `evaluate_ucr.py` for the download/unzip commands.

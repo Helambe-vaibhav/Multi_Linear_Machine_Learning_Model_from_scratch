@@ -12,8 +12,9 @@ Each detector doesn't just say "this point is an anomaly" - it also produces
 a plain-English *explanation* of why the point looks anomalous, classifying
 it as one of:
   - "spike"        : one-off point shooting far above/below its neighbours.
-  - "level_shift"   : the local baseline itself moved (mean before/after the
-                      point differs a lot) -> a regime change, not a blip.
+  - "level_shift"   : a CUSUM changepoint test (see changepoint_detection.py)
+                      confirms a sustained shift in the baseline, not just a
+                      one-off mean difference -> a regime change, not a blip.
   - "volatility_change" : the local variance changed sharply -> the series
                       became noisier/calmer, not necessarily off-level.
 
@@ -25,6 +26,8 @@ import os
 from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
+
+from changepoint_detection import is_confirmed_level_shift
 
 
 # ---------------------------------------------------------------------------
@@ -99,20 +102,19 @@ def _classify_reason(series: pd.Series, idx_pos: int, window: int) -> tuple[str,
     std_before = before.std(ddof=0) if len(before) > 1 else 0.0
     std_after = after.std(ddof=0) if len(after) > 1 else 0.0
 
-    baseline_shift = abs(mean_after - mean_before)
     local_std = max(std_before, 1e-9)
-    is_persistent_shift = len(after) >= max(3, window // 2) and baseline_shift > 2 * local_std
-
     vol_ratio = (std_after + 1e-9) / (std_before + 1e-9)
     is_volatility_change = vol_ratio > 2.5 or vol_ratio < 0.4
 
-    if is_persistent_shift:
-        direction = "up" if mean_after > mean_before else "down"
+    confirmed, cusum_stat, direction, cp_offset = is_confirmed_level_shift(before, after)
+    if confirmed:
+        cp_index = after_lo + cp_offset
         return (
             "level_shift",
-            f"The series baseline shifted {direction} around this point "
-            f"(mean before={mean_before:.2f} -> mean after={mean_after:.2f}); "
-            "this looks like a regime change / structural break rather than a one-off blip. "
+            f"CUSUM confirms a sustained shift {direction} starting at index {cp_index} "
+            f"(cumulative-sum statistic={cusum_stat:.2f}, threshold=5.0; mean before={mean_before:.2f} "
+            f"-> mean after={mean_after:.2f}); this is a regime change / structural break, not a "
+            "one-off blip - the shift persists across the whole window, not just at the flagged point. "
             "Likely cause: a real change in the underlying process (e.g. new pricing, "
             "sensor recalibration, policy change) rather than noise."
         )

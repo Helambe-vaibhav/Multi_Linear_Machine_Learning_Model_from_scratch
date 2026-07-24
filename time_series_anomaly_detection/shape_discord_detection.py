@@ -214,6 +214,98 @@ def plot_pattern_comparison(series: pd.Series, discord: ShapeDiscord, m: int, sa
 
 
 # ---------------------------------------------------------------------------
+# 3b. Occlusion-based sub-window attribution: which PART of the window is
+#     actually driving the discord score, not just "the whole window"?
+# ---------------------------------------------------------------------------
+def _znorm_distance(a: np.ndarray, b: np.ndarray) -> float:
+    def znorm(x):
+        std = np.std(x)
+        return (x - np.mean(x)) / (std if std > 1e-9 else 1.0)
+    return float(np.sqrt(np.sum((znorm(a) - znorm(b)) ** 2)))
+
+
+def occlusion_attribution(series: pd.Series, discord: ShapeDiscord, m: int, n_segments: int = 8):
+    """
+    `plot_pattern_comparison` shows that a window's shape is anomalous, but
+    not which PART of it is responsible - a 200-point window's discord
+    score could be driven by 10 points or by all 200. This answers that by
+    occlusion: split the window into `n_segments` equal parts, and for
+    each, replace just that segment with the corresponding segment from
+    the nearest-neighbor ("normal") window, then re-measure the distance
+    to that neighbor. A segment whose replacement sharply reduces the
+    distance was a major contributor to the anomaly; a segment whose
+    replacement barely changes anything was already "normal-looking" on
+    its own.
+
+    Returns (baseline_distance, bounds, contributions): `bounds` are the
+    n_segments+1 boundary indices (within the window, 0..m), and
+    `contributions[i]` is how much distance segment i's replacement
+    removed (baseline_distance - distance_after_patching_segment_i).
+    Contributions are NOT guaranteed to sum to baseline_distance (segments
+    can interact), but each one is independently interpretable: "patching
+    just this part alone would have closed this much of the gap."
+    """
+    values = series.to_numpy(dtype=float)
+    anomalous = values[discord.position:discord.position + m]
+    neighbor = values[discord.neighbor_position:discord.neighbor_position + m]
+
+    baseline_distance = _znorm_distance(anomalous, neighbor)
+
+    bounds = np.linspace(0, m, n_segments + 1).astype(int)
+    contributions = np.zeros(n_segments)
+    for i in range(n_segments):
+        lo, hi = bounds[i], bounds[i + 1]
+        if hi <= lo:
+            continue
+        patched = anomalous.copy()
+        patched[lo:hi] = neighbor[lo:hi]
+        patched_distance = _znorm_distance(patched, neighbor)
+        contributions[i] = baseline_distance - patched_distance
+
+    return baseline_distance, bounds, contributions
+
+
+def plot_occlusion_attribution(series: pd.Series, discord: ShapeDiscord, m: int,
+                                n_segments: int, save_path: str) -> None:
+    import matplotlib.pyplot as plt
+
+    baseline_distance, bounds, contributions = occlusion_attribution(series, discord, m, n_segments)
+    values = series.to_numpy(dtype=float)
+    anomalous = values[discord.position:discord.position + m]
+    neighbor = values[discord.neighbor_position:discord.neighbor_position + m]
+
+    def znorm(x):
+        std = np.std(x)
+        return (x - np.mean(x)) / (std if std > 1e-9 else 1.0)
+
+    max_contribution = max(contributions.max(), 1e-9)
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, height_ratios=[2, 1])
+
+    for i in range(n_segments):
+        lo, hi = bounds[i], bounds[i + 1]
+        intensity = contributions[i] / max_contribution
+        axes[0].axvspan(lo, hi, color="crimson", alpha=0.35 * max(intensity, 0))
+    axes[0].plot(znorm(anomalous), color="crimson", label="anomalous (z-normalized)")
+    axes[0].plot(znorm(neighbor), color="steelblue", alpha=0.7, label="nearest match (z-normalized)")
+    axes[0].set_title(f"Anomalous window (shaded = how much each segment drives the discord score, "
+                       f"total distance={baseline_distance:.2f})")
+    axes[0].legend(fontsize=8)
+
+    centers = (bounds[:-1] + bounds[1:]) / 2
+    widths = np.diff(bounds)
+    axes[1].bar(centers, contributions, width=widths * 0.9, color="crimson", alpha=0.7)
+    axes[1].set_xlabel("position within window")
+    axes[1].set_ylabel("distance removed\nby patching this segment")
+    axes[1].axhline(0, color="black", linewidth=0.5)
+
+    fig.suptitle("Occlusion attribution: which part of the window is actually anomalous?")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=120)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # 4. Demo: a SHAPE-only anomaly that the point-based detectors in
 #    anomaly_detection.py cannot see (same mean/std as the rest of the
 #    series - only the local waveform pattern differs).
@@ -253,3 +345,12 @@ if __name__ == "__main__":
     out_path = os.path.join(_HERE, "shape_discord_demo_pattern.png")
     plot_pattern_comparison(series, top, m, out_path)
     print(f"\nSaved pattern comparison plot to {out_path}")
+
+    baseline_distance, bounds, contributions = occlusion_attribution(series, top, m, n_segments=8)
+    print(f"\nOcclusion attribution (baseline distance={baseline_distance:.2f}):")
+    for i, c in enumerate(contributions):
+        print(f"  segment [{bounds[i]:3d},{bounds[i+1]:3d}): distance removed if patched = {c:.2f}")
+
+    occlusion_path = os.path.join(_HERE, "shape_discord_demo_occlusion.png")
+    plot_occlusion_attribution(series, top, m, n_segments=8, save_path=occlusion_path)
+    print(f"\nSaved occlusion attribution plot to {occlusion_path}")
