@@ -20,6 +20,8 @@ explicit and readable.
 | `root_cause_score_decomposition.png` | Score-attribution chart from the root-cause demo |
 | `shape_discord_detection.py` | Shape-based (Matrix Profile / discord) detector + "diff pattern" plots + a runnable demo |
 | `shape_discord_demo_pattern.png` | Synthetic shape-only anomaly the point detectors miss entirely |
+| `fourier_embedding_detection.py` | Adaptive window size (dominant Fourier period) + Fourier-embedding PCA "diff embedding" plots |
+| `fourier_embedding_001.png` / `_004.png` / `_008.png` | Diff-embedding plots for the 3-dataset pilot |
 | `evaluate_ucr.py` | Real-world validation against the UCR Anomaly Archive (all 4 detectors) |
 | `ucr_evaluation_results.csv` | Per-file results from the full 250-file UCR run |
 | `ucr_example_hit.png` / `ucr_example_miss.png` | Illustrative real-data hit/miss cases (point-based detectors) |
@@ -32,6 +34,7 @@ Run the demos:
 python3 time_series_anomaly_detection/anomaly_detection.py
 python3 time_series_anomaly_detection/root_cause_analysis.py
 python3 time_series_anomaly_detection/shape_discord_detection.py
+python3 time_series_anomaly_detection/fourier_embedding_detection.py path/to/ucr_data
 ```
 
 ## What is a time series anomaly?
@@ -345,6 +348,82 @@ The right panel is what the algorithm actually scores on: two curves that
 should be near-identical if the pattern were normal, diverging sharply
 where the anomaly is. The distance in the title is literally the discord
 score - the z-normalized Euclidean distance between the two curves.
+
+## Fourier-embedding detection: adaptive window size + "diff embeddings" (`fourier_embedding_detection.py`)
+
+Shape discord detection (above) fixes the "point vs. shape" gap, but
+introduces its own weakness: it needs a **fixed window length `m` chosen
+by hand** (the UCR benchmark used `m=100` for every one of the 250 files,
+regardless of domain). This module removes that manual choice and adds a
+direct visualization of how normal and anomalous windows differ, rather
+than a bare distance number.
+
+### 1. Adaptive window size from the series' own dominant frequency
+
+`estimate_period_via_fourier()` takes the FFT of the (mean-removed) series
+and finds the period of its strongest non-trivial frequency component -
+i.e. "how long is one natural cycle of this specific series?" - clipped to
+a sane range so it can't collapse to the whole series or to a few points.
+That period becomes the window length, so every series gets a size that
+fits *its own* structure instead of one constant applied everywhere:
+
+| File | Domain | Fixed `m` used earlier | Auto-selected `m` (this module) |
+|---|---|---|---|
+| `001_..._sddb40` | ECG | 100 | **213** |
+| `004_..._BIDMC1` | ECG-like | 100 | **82** |
+| `008_..._CIMIS44AirTemperature4` | Air temperature | 100 | **24** |
+
+### 2. Fourier embedding + PCA: "diff embedding" for normal vs. anomaly windows
+
+Every window (of the auto-selected length) is z-normalized, Hann-tapered,
+and turned into a fixed-length vector of its FFT magnitude coefficients -
+a compact numeric fingerprint of the window's *shape and frequency
+content*, independent of scale. All windows for a series are computed in
+one batched, vectorized FFT call (`embed_all_windows`), then projected to
+2D via a from-scratch PCA (plain `numpy.linalg.svd`, no scikit-learn) so
+the population of normal vs. anomalous windows can be seen directly:
+
+![Fourier embedding diff - CIMIS air temperature](fourier_embedding_008.png)
+
+Here the windows overlapping the true labeled anomaly (red) visibly
+separate from the bulk of normal windows (blue) along PC2 - a direct
+picture of "these windows' shapes are different," which is exactly what
+"get diff embeddings for normal vs. anomaly windows" means concretely.
+
+**This separation isn't guaranteed, though** - on the ECG file that shape
+discord caught, the anomalous windows mostly sit *inside* the normal
+cloud in this embedding, with only a small tail poking out:
+
+![Fourier embedding diff - ECG sddb40](fourier_embedding_001.png)
+
+### 3. Results on 3 datasets (as requested - not yet run on the full 250)
+
+An `embedding_distance_detector` scores each window by its standardized
+distance to the *train-region-only* reference embedding (never touching
+test/anomaly data, so no leakage), and picks the highest-scoring test
+window as its top-1 guess:
+
+| File | Auto `m` | Top-1 hit? | Compare to shape discord |
+|---|---|---|---|
+| `001_..._sddb40` | 213 | ❌ Miss (off by ~2,104) | Shape discord **hit** this one |
+| `004_..._BIDMC1` | 82 | ✅ Hit | Shape discord also hit this one |
+| `008_..._CIMIS44AirTemperature4` | 24 | ✅ Hit | Shape discord **missed** this one |
+
+**Honest interpretation**: 2 of 3, and — notably — it disagrees with shape
+discord on the two harder files in *opposite* directions. It catches
+`008` (the case shape discord's fixed `m=100` couldn't resolve, matching
+the intuition that a domain-appropriate window size matters), but it
+misses `001` (the case shape discord's exact nearest-neighbor exclusion-zone
+search catches and this coarser PCA-distance approach doesn't fully
+separate). This is the same complementarity story as point-based vs.
+shape-based detectors, one level deeper: even within "shape-aware"
+methods, *how* you compare shapes (exact nearest-neighbor distance vs.
+frequency-domain embedding + distance-to-reference) changes which
+anomalies you catch. This is a 3-file pilot, not a benchmark claim — a
+full 250-file run is the natural next step before citing a hit rate in a
+paper.
+
+Reproduce: `python3 fourier_embedding_detection.py path/to/ucr_data`.
 
 ## Real-world validation: the UCR Anomaly Archive (`evaluate_ucr.py`)
 

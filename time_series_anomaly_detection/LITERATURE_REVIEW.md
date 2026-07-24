@@ -297,6 +297,26 @@ recall. **Root-cause validation on real multivariate data is still open**
 (SMD, MSAP/MSL, or PSM — all have multiple correlated sensor channels and
 are used as AERCA/PyRCA baselines).
 
+**Fifth detector added (3-dataset pilot, not yet the full 250):**
+`fourier_embedding_detection.py` addresses shape discord's biggest named
+weakness — a hand-picked fixed window length `m` — by setting `m` from
+the period of the series' own dominant FFT frequency, then embedding every
+window as its z-normalized Fourier-magnitude spectrum and visualizing
+normal-vs-anomaly separation via a from-scratch PCA (plain
+`numpy.linalg.svd`). On the 3-file pilot (chosen to include one file each
+where point-based and shape-discord methods previously agreed or
+disagreed): 2/3 hits, and critically, it **disagrees with shape discord in
+both directions** — it catches `008_CIMIS44AirTemperature4` (which
+fixed-window shape discord missed) but misses `001_sddb40` (which shape
+discord caught via its exact nearest-neighbor search). This extends the
+complementarity finding one level deeper: it's not just "point-based vs.
+shape-based," but *which specific shape-comparison mechanism* you use
+also changes which anomalies you catch. This is real evidence for an
+ensemble-of-detector-families argument in the paper, but it's only 3
+files — running this across the full 250-file archive (same as
+`evaluate_ucr.py` does for the other four detectors) is the immediate next
+step before any hit-rate number here is citable.
+
 **Concrete next steps toward a paper draft:**
 1. **Real or more realistic synthetic benchmarks.** The current demo has
    one obvious cause; a paper needs harder cases — multiple simultaneous
