@@ -18,9 +18,12 @@ explicit and readable.
 | `root_cause_analysis.py` | Multivariate root-cause ranking + explainability + a runnable demo |
 | `root_cause_demo_output.png` | Time series plot from the root-cause demo |
 | `root_cause_score_decomposition.png` | Score-attribution chart from the root-cause demo |
-| `evaluate_ucr.py` | Real-world validation against the UCR Anomaly Archive |
+| `shape_discord_detection.py` | Shape-based (Matrix Profile / discord) detector + "diff pattern" plots + a runnable demo |
+| `shape_discord_demo_pattern.png` | Synthetic shape-only anomaly the point detectors miss entirely |
+| `evaluate_ucr.py` | Real-world validation against the UCR Anomaly Archive (all 4 detectors) |
 | `ucr_evaluation_results.csv` | Per-file results from the full 250-file UCR run |
-| `ucr_example_hit.png` / `ucr_example_miss.png` | Illustrative real-data hit/miss cases |
+| `ucr_example_hit.png` / `ucr_example_miss.png` | Illustrative real-data hit/miss cases (point-based detectors) |
+| `ucr_shape_pattern_001.png` | Shape-discord "diff pattern" for the file all point-based detectors missed |
 | `LITERATURE_REVIEW.md` | Survey of current TSAD + explainability research (for paper writing) |
 
 Run the demos:
@@ -28,6 +31,7 @@ Run the demos:
 ```bash
 python3 time_series_anomaly_detection/anomaly_detection.py
 python3 time_series_anomaly_detection/root_cause_analysis.py
+python3 time_series_anomaly_detection/shape_discord_detection.py
 ```
 
 ## What is a time series anomaly?
@@ -294,17 +298,67 @@ also the paper-framing point in `LITERATURE_REVIEW.md` §2.5: it's the
 concrete mechanism behind the "lightweight, fully transparent" contrast
 with black-box neural RCA (AERCA) and post-hoc-XAI-wrapped deep detectors.
 
+## Shape-based detection: "point extension" (`shape_discord_detection.py`)
+
+Every detector above compares a single **value** against a local rolling
+mean/std. That misses an entire class of real anomalies: a subsequence
+whose *shape* is wrong even though its value/variance look completely
+ordinary (e.g. one distorted heartbeat with the same amplitude range as
+every other beat around it).
+
+**Point extension**: instead of asking "is this value far from its
+neighbours?", extend the point into a subsequence — a window of length `m`
+starting at that point — and ask "does this window's *shape* have a good
+match anywhere else in the series?". A subsequence with no good match
+anywhere else is a **discord** (Keogh et al.'s term), regardless of what
+its raw value looks like.
+
+Computing this requires comparing one candidate window against every other
+window in the series. Done naively that's O(n·m) per query; this module
+uses **MASS** (Mueen's Algorithm for Similarity Search) to get the full
+z-normalized-Euclidean-distance profile in O(n log n) via FFT convolution
+(`scipy.signal.fftconvolve`), which is what makes it practical to run on
+real 900,000-point series in seconds.
+
+### Demo: an anomaly the point-based detectors cannot see at all
+
+`generate_shape_anomaly_demo()` builds a clean sine wave and distorts the
+*frequency* of one cycle (doubles it) without changing its local mean or
+standard deviation. Rolling Z-Score flags **zero points** - by value, that
+cycle looks completely normal. The shape discord detector finds it exactly:
+
+```
+Rolling Z-Score flagged 0 point(s) (true shape anomaly starts at 1000)
+Top shape discord: position=1002 (true anomaly at 1000), score=5.70
+```
+
+### "Diff patterns": what `plot_pattern_comparison` shows
+
+For any flagged discord, this plots the anomalous subsequence directly
+against its nearest-matching subsequence elsewhere in the series - side by
+side in raw values, and again z-normalized (mean/std removed from each
+independently) so only *shape* is compared:
+
+![shape discord demo pattern](shape_discord_demo_pattern.png)
+
+The right panel is what the algorithm actually scores on: two curves that
+should be near-identical if the pattern were normal, diverging sharply
+where the anomaly is. The distance in the title is literally the discord
+score - the z-normalized Euclidean distance between the two curves.
+
 ## Real-world validation: the UCR Anomaly Archive (`evaluate_ucr.py`)
 
 Everything above was validated on synthetic data with known, injected
 anomalies - useful for confirming the logic works, but synthetic anomalies
-are easy by construction. `evaluate_ucr.py` runs the three detectors from
-`anomaly_detection.py` against the **UCR Anomaly Archive** (Keogh et al.;
-see Wu & Keogh, *"Current Time Series Anomaly Detection Benchmarks are
-Flawed"*, 2021) — 250 real series (ECG, respiration, gait, air temperature,
-power demand, insect EPG, MARS rover telemetry, etc.), each with exactly
-one labeled anomaly interval. It's one of the nine benchmarks named across
-the surveys in `LITERATURE_REVIEW.md` §1.
+are easy by construction. `evaluate_ucr.py` runs all four detectors -
+three point-based (`anomaly_detection.py`) plus the shape-based discord
+detector (`shape_discord_detection.py`) - against the **UCR Anomaly
+Archive** (Keogh et al.; see Wu & Keogh, *"Current Time Series Anomaly
+Detection Benchmarks are Flawed"*, 2021) — 250 real series (ECG,
+respiration, gait, air temperature, power demand, insect EPG, MARS rover
+telemetry, etc.), each with exactly one labeled anomaly interval. It's one
+of the nine benchmarks named across the surveys in `LITERATURE_REVIEW.md`
+§1.
 
 The archive is not bundled in this repo (330MB+ across 250 files) - see the
 docstring at the top of `evaluate_ucr.py` for the download/unzip commands.
@@ -316,31 +370,45 @@ inside the labeled anomaly interval - a **top-1 hit rate**, the same
 protocol this specific archive's own literature uses (e.g. MERLIN, Matrix
 Profile discord papers). This can't be inflated by flagging lots of points.
 
-### Results (full 250-file run)
+### Results (full 250-file run, all four detectors)
 
 | Detector | Top-1 hit rate |
 |---|---|
 | Rolling Z-Score | 10.0% (25/250) |
 | Rolling IQR | 6.0% (15/250) |
 | Trend-Residual Z-Score | 10.8% (27/250) |
-| **Any of the three agrees** | 16.8% (42/250) |
-| **All three agree** | 3.2% (8/250) |
+| **Shape Discord** | **20.4% (51/250)** |
+| Any of the 3 point-based methods agrees | 16.8% (42/250) |
+| **Any of all 4 methods agrees** | **31.2% (78/250)** |
+| All 4 agree | 1.6% (4/250) |
 | *(random-guess baseline)* | *0.84%* |
 
-**Honest interpretation**: absolute accuracy is low, but these detectors
-are **~12x better than random guessing** (0.84% baseline, given how narrow
-the labeled interval is relative to the whole series) - they are picking up
-real signal, not noise. The low absolute number is expected and, per Wu &
-Keogh's own paper introducing this archive, largely the point: the UCR
-Anomaly Archive was deliberately constructed so that **naive point-deviation
-methods fail** on many of its series, because the "anomaly" is often a
-subtle change in local *shape* (e.g. a slightly different heartbeat
-morphology) rather than a value spike a rolling mean/std or IQR fence can
-catch. Performance varies enormously by domain — e.g. `BIDMC` (2/2, 100%)
-and `NOISECIMIS`/`NOISEMesoplodonDensirostris` (1/1 each) were caught
-easily, while `apneaecg`, `gait`, `tilt`, and `taichidbS` categories scored
-essentially 0%, because those anomalies are shape/morphology changes that a
-rolling window over raw values structurally cannot see.
+**Headline result**: adding the shape discord detector nearly doubles the
+best single point-based detector's hit rate (20.4% vs. 10.8%), and
+combining all four ("any agrees") reaches 31.2% - almost 2x the point-only
+ensemble (16.8%). That combined number is the more honest one to quote:
+no single method dominates, and the gain comes from *complementarity*, not
+from shape discord being categorically better.
+
+**The complementarity, precisely**: of the 250 files,
+- **36 were caught *only* by shape discord** — every point-based method
+  missed them (mostly ECG, apnea-ECG, InternalBleeding, qtdbSel, gaitHunt
+  files: morphology changes invisible to value-based rolling stats).
+- **27 were caught *only* by a point-based method** — shape discord missed
+  them (e.g. most of `CIMIS`, `GP`, `Lab`, `STAFFIIIDatabase`,
+  `CHARISten`: cases where the anomaly *is* closer to a value-level shift
+  that the fixed subsequence length `m=100` doesn't resolve well, or where
+  a spike genuinely is the simplest description of what happened).
+- Only 4 files had all four methods agree.
+
+This is the honest story for a paper: **point-value and shape-based
+detection catch structurally different failure modes**, and this dataset
+alone won't let you declare a single "winner" — it argues for running both
+families and combining their outputs, not for replacing one with the
+other. Domain matters a lot too: `apneaecg` jumped from 0% (trend-residual)
+to 75% (shape discord); `qtdbSel` went from 0% to 100%; but `STAFFIIIDatabase`
+and `CHARISten` went the other way (11%/33% down to 0%) once switching to
+shape comparison at a fixed window length.
 
 **Hit example** (`004_UCR_Anomaly_DISTORTEDBIDMC1`, an ECG-like signal) -
 the anomaly is a shape distortion in one beat, small enough to be invisible
@@ -349,24 +417,35 @@ detector to catch exactly:
 
 ![UCR hit example](ucr_example_hit.png)
 
-**Miss example** (`001_UCR_Anomaly_DISTORTED1sddb40`, also ECG-like) - the
-labeled anomaly is not visually distinguishable from the rest of the signal
-even at this zoom level, and several other points elsewhere in the series
-look at least as extreme by rolling mean/std, so the detector's top-1 guess
-lands far from the true interval:
+**Miss example for point-based detectors, hit for shape discord**
+(`001_UCR_Anomaly_DISTORTED1sddb40`, also ECG-like) - the labeled anomaly
+[52000, 52620] is not visually distinguishable from the rest of the signal
+by raw value, and several other points elsewhere in the series look at
+least as extreme by rolling mean/std, so all three point-based detectors'
+top-1 guesses land far from the true interval:
 
 ![UCR miss example](ucr_example_miss.png)
 
-**What this means for the project**: the point-level "why" explanations and
-the root-cause ranking are both detector-agnostic wrappers - they explain
-*whatever* a detector flags, but they don't improve the underlying
-detector's recall on hard, shape-based anomalies. This is an honest
-limitation to state directly in a paper rather than something to paper
-over: it's exactly the gap that motivates shape-aware methods (Matrix
-Profile discords, KAN-AD's smooth-function residuals) and foundation
-models (§1) over simple rolling statistics, and it's a legitimate
-experiment to report — "our explanations are only as good as the detector
-underneath them" is a genuine, citable limitation.
+But comparing *shape* instead of *value* finds it directly: the shape
+discord detector's top pick (position 52355) lands inside the true
+interval. Its nearest matching pattern anywhere else in the ~80,000-point
+series (position 67739) still looks noticeably different once both are
+z-normalized — a real structural difference (an extra dip the "normal"
+beat doesn't have), not a value-level outlier:
+
+![shape pattern comparison for file 001](ucr_shape_pattern_001.png)
+
+**What this means for the project**: the point-level "why" explanations
+and the root-cause ranking are detector-agnostic wrappers - they explain
+*whatever* a detector flags, so their usefulness is capped by the
+detector's own recall. Shape discord detection closes part of that gap for
+morphology-based anomalies, but not all of it (the 27 point-only catches
+above), so the honest framing for a paper is: **detector choice should
+match anomaly type, and reporting a single-detector number without this
+breakdown would be misleading.** This directly corroborates the
+"shape-aware methods vs. rolling statistics" gap discussed in
+`LITERATURE_REVIEW.md` §1, now backed by a same-benchmark, same-protocol
+before/after measurement rather than just citing other papers' claims.
 
 Reproduce: `python3 evaluate_ucr.py path/to/ucr_data` (add an integer to
 run on only the first N files for a quick check).

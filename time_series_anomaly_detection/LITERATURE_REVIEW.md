@@ -260,15 +260,33 @@ also done: every candidate's score is an exact sum of three named terms,
 which sidesteps the SHAP/LIME approximation problem entirely rather than
 solving it post-hoc.
 
-**Real-world detector validation done, RCA validation still pending.**
-`evaluate_ucr.py` ran the base detectors (not yet the RCA module — UCR is
-univariate) against the real UCR Anomaly Archive: 250 files, top-1 hit
-rates of 10.0% (z-score), 6.0% (IQR), 10.8% (trend-residual), vs. a 0.84%
-random-guess baseline — meaningfully above chance, but low in absolute
-terms, because this archive was deliberately built (per Wu & Keogh, the
-paper that introduced it) to contain shape/morphology anomalies that
-defeat simple rolling-statistics detectors. Full writeup, category
-breakdown, and example plots are in README.md "Real-world validation".
+**Real-world detector validation done (including a shape-based detector),
+RCA validation still pending.** `evaluate_ucr.py` ran four detectors
+against the real UCR Anomaly Archive (250 files): three point-based
+methods (10.0% z-score, 6.0% IQR, 10.8% trend-residual top-1 hit rate) plus
+a new **shape discord detector** (`shape_discord_detection.py`) built via
+"point extension" - z-normalized Euclidean subsequence matching (MASS/FFT),
+the same family of technique as Matrix Profile discord discovery, the
+actual reference method this archive was validated against. Shape discord
+scored **20.4%** — nearly double the best point-based method — and any of
+all four methods agreeing reached **31.2%**, vs. 16.8% for the point-based
+three alone and a 0.84% random baseline.
+
+**The key finding is complementarity, not superiority**: 36 files were
+caught *only* by shape discord (mostly ECG/apnea-ECG/gait morphology
+cases), but 27 were caught *only* by a point-based method (mostly CIMIS/
+GP/Lab/STAFFIIIDatabase/CHARISten cases where a fixed subsequence length
+`m=100` doesn't resolve the anomaly well, or where a value-level shift
+really is the better description). Only 4 files had all four agree. This
+is a stronger, more specific paper contribution than "shape-aware methods
+beat point methods" — it's "different anomaly *types* need different
+detector *families*, on the same benchmark under the same protocol,"
+which motivates an ensemble/detector-selection argument rather than a
+single best detector. Full writeup, category breakdown, and example plots
+(including a side-by-side pattern comparison for a file every point-based
+method missed) are in README.md "Real-world validation" and "Shape-based
+detection".
+
 This is a citable, honest limitation for the paper, not a result to hide:
 it demonstrates precisely the gap between simple detectors and the
 shape-aware/foundation-model methods discussed in §1, and it means a paper
@@ -369,6 +387,13 @@ step 2.
   Flawed and What to Do About It* (introduces the UCR Anomaly Archive used
   in `evaluate_ucr.py`), 2021 — archive:
   https://www.cs.ucr.edu/~eamonn/time_series_data_2018/UCR_TimeSeriesAnomalyDatasets2021.zip
+- Yeh, C-C. M. et al., *Matrix Profile I: All Pairs Similarity Joins for
+  Time Series* (introduces the Matrix Profile / MASS technique that
+  `shape_discord_detection.py` implements a lightweight FFT-based version
+  of), ICDM 2016.
+- Mueen, A. et al., *The Fastest Similarity Search Algorithm for Time
+  Series Subsequences under Euclidean Distance* (MASS algorithm) —
+  reference: https://www.cs.unm.edu/~mueen/FastestSimilaritySearch.html
 - Curated lists: [Awesome-Anomaly-Detection-Foundation-Models](https://github.com/mala-lab/Awesome-Anomaly-Detection-Foundation-Models),
   [Awesome-Time-Series-Explainability](https://github.com/JHoelli/Awesome-Time-Series-Explainability)
 
