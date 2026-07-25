@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+time_series_anomaly_detection/ucr_data/
+time_series_anomaly_detection/*.zip
