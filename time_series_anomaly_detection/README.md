@@ -19,6 +19,8 @@ explicit and readable.
 | `root_cause_analysis.py` | Multivariate root-cause ranking + explainability + a runnable demo |
 | `root_cause_demo_output.png` | Time series plot from the root-cause demo |
 | `root_cause_score_decomposition.png` | Score-attribution chart from the root-cause demo |
+| `kan_root_cause.py` | KAN (Fourier-edge) nonlinear Granger causality + edge-function plots |
+| `kan_edge_function_demo.png` | Learned edge function recovering a magnitude-only (quadratic) effect |
 | `shape_discord_detection.py` | Shape-based (Matrix Profile / discord) detector + "diff pattern" and occlusion-attribution plots + a runnable demo |
 | `shape_discord_demo_pattern.png` | Synthetic shape-only anomaly the point detectors miss entirely |
 | `shape_discord_demo_occlusion.png` | Occlusion attribution on the synthetic shape anomaly |
@@ -36,6 +38,7 @@ Run the demos:
 ```bash
 python3 time_series_anomaly_detection/anomaly_detection.py
 python3 time_series_anomaly_detection/root_cause_analysis.py
+python3 time_series_anomaly_detection/kan_root_cause.py
 python3 time_series_anomaly_detection/shape_discord_detection.py
 python3 time_series_anomaly_detection/fourier_embedding_detection.py path/to/ucr_data
 ```
@@ -353,6 +356,95 @@ This "exact decomposition instead of approximated attribution" property is
 also the paper-framing point in `LITERATURE_REVIEW.md` §2.5: it's the
 concrete mechanism behind the "lightweight, fully transparent" contrast
 with black-box neural RCA (AERCA) and post-hoc-XAI-wrapped deep detectors.
+
+## KAN for nonlinear root-cause detection (`kan_root_cause.py`)
+
+The root-cause ranking above tests only **linear** Granger causality (OLS)
+- which structurally cannot detect a real causal relationship where the
+target reacts to the candidate's *magnitude* regardless of sign, or only
+above some threshold. Both are common in practice (e.g. "the system only
+degrades once load exceeds X," or "errors spike whenever the input
+deviates far from baseline, in either direction") and both have near-zero
+**linear** correlation even though the causal link is strong.
+
+### A single KAN edge, fit with plain OLS - no gradient descent, no PyTorch
+
+A Kolmogorov-Arnold Network replaces a fixed weight-per-input (an ordinary
+regression coefficient) with a **learned univariate function per input**.
+Following **KAN-AD**'s design choice (`LITERATURE_REVIEW.md` §1 - Fourier
+basis instead of the original KAN paper's B-splines, since it's smoother
+and less sensitive to local noise), each edge here is represented as a
+small Fourier series of the (z-normalized, tanh-squashed to avoid basis
+aliasing) input.
+
+The key simplification: a single-layer KAN with a *fixed* basis is linear
+in its coefficients (only nonlinear in the raw input, via the basis
+expansion) - i.e. a Generalized Additive Model - so the whole thing is fit
+with `np.linalg.lstsq` on an expanded feature matrix. No training loop, no
+backpropagation: the same OLS machinery as the linear Granger test and
+the repo's original regression notebook, just applied to expanded
+features instead of raw ones.
+
+### Nonlinear Granger causality + a picture of the relationship
+
+```
+restricted:   y_t = f(y_(t-1))                    (KAN edge on target's own lag)
+unrestricted: y_t = f(y_(t-1)) + g(x_(t-lag))      (+ a KAN edge on the candidate)
+```
+
+Comparing the two via the same nested-model F-test as the linear version
+gives a **nonlinear** Granger-causality test. Because the candidate's edge
+`g` is fit explicitly, its learned shape can be evaluated and plotted
+directly - showing *how* the candidate affects the target, not just a bare
+F-statistic.
+
+### Demo: an effect linear Granger causality is structurally blind to
+
+`generate_nonlinear_causal_demo()` builds `target = 10 + 4*cause[t-3]^2 +
+noise` - squaring a zero-mean input makes the effect depend only on
+magnitude, not sign, which gives near-zero Pearson correlation despite a
+strong, real, deterministic-up-to-noise relationship:
+
+```
+Linear Granger F-test:      F=1.09,    p=0.3648   (completely insignificant)
+KAN nonlinear Granger test:  F=1242.46, p<0.0001   (overwhelming evidence)
+```
+
+The edge function plot recovers the true relationship directly from data
+- a clear, symmetric U-shape centered at zero:
+
+![KAN edge function demo](kan_edge_function_demo.png)
+
+**Specificity check, not just sensitivity**: run on the *original* (purely
+linear) root-cause demo from `root_cause_analysis.py`, the KAN test does
+**not** manufacture false signal - `upstream_cause` shows similar evidence
+under both tests (linear F=53.6 vs. KAN F=43.3), and no candidate gets
+flagged as "nonlinear relationship the linear test missed." That's the
+correct behavior: the nonlinear test should agree with the linear one when
+the true relationship actually is linear, and diverge from it (as in the
+demo above) only when it isn't.
+
+### Usage: a "second opinion" alongside the existing ranking
+
+```python
+from root_cause_analysis import generate_multivariate_demo_data, analyze_root_causes
+from anomaly_detection import rolling_zscore_detector
+from kan_root_cause import kan_diagnostics_for_candidates
+
+target, candidates = generate_multivariate_demo_data()
+detection = rolling_zscore_detector(target)
+anomaly = max(detection.anomalies, key=lambda a: a.score)
+
+results = analyze_root_causes(target, anomaly.index, candidates, max_lag=7)
+diagnostics = kan_diagnostics_for_candidates(results, target, candidates)
+print(diagnostics)   # flags candidates whose linear score was weak but KAN evidence is strong
+```
+
+`kan_diagnostics_for_candidates` returns a separate DataFrame rather than
+mutating the existing (already-validated) linear ranking - meant to be
+read alongside it, specifically to catch candidates that look unimportant
+under the linear test but may have a real nonlinear relationship worth a
+human's attention.
 
 ## Shape-based detection: "point extension" (`shape_discord_detection.py`)
 

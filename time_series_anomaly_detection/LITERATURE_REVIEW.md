@@ -339,6 +339,25 @@ this is exactly the kind of evaluation rigor the field's own literature
 Full writeup, statistical tests, and category breakdown are in
 README.md's "Real-world validation" section.
 
+**KAN added for nonlinear root-cause detection.** `kan_root_cause.py`
+directly applies KAN-AD's design choice (Fourier-basis edges instead of
+the original KAN paper's B-splines) to the root-cause problem: a
+single-layer KAN with a fixed Fourier basis is linear in its coefficients,
+so it's fit with plain OLS (a Generalized Additive Model), no gradient
+descent or neural-network library required. This gives a nonlinear
+Granger-causality test alongside the existing linear one in
+`root_cause_analysis.py`, plus a directly plottable "edge function"
+showing *how* a candidate affects the target. On a synthetic magnitude-
+only effect (`target = 10 + 4*cause[t-3]^2 + noise`), linear Granger is
+correctly insignificant (F=1.09, p=0.36 — it structurally cannot see a
+sign-independent effect) while the KAN test detects it overwhelmingly
+(F=1242, p<0.0001) and its edge-function plot recovers the true U-shaped
+relationship directly from data. Run on the *original linear* root-cause
+demo as a specificity check, it does not manufacture false signal — a
+useful methods point for a paper (a nonlinear test should agree with the
+linear one when the truth is linear, and this one does). Full writeup in
+README.md "KAN for nonlinear root-cause detection".
+
 **Concrete next steps toward a paper draft:**
 1. **Real or more realistic synthetic benchmarks.** The current demo has
    one obvious cause; a paper needs harder cases — multiple simultaneous
@@ -382,6 +401,10 @@ step 2.
 - Zhou et al., *KAN-AD: Time Series Anomaly Detection with
   Kolmogorov–Arnold Networks*, ICML 2025, arXiv:2411.00278 —
   https://arxiv.org/abs/2411.00278
+- Liu et al., *KAN: Kolmogorov-Arnold Networks* (the original architecture
+  - learned univariate edge functions instead of fixed per-input weights;
+  `kan_root_cause.py` implements a single Fourier-basis-edge layer, KAN-AD's
+  basis choice), arXiv:2404.19756 — https://arxiv.org/abs/2404.19756
 - *AXIS: Explainable Time Series Anomaly Detection with Large Language
   Models*, arXiv:2509.24378 — https://arxiv.org/abs/2509.24378
 - *Can LLMs Understand Time Series Anomalies?*, ICLR 2025 —
