@@ -29,8 +29,36 @@ import os
 from dataclasses import dataclass
 import numpy as np
 import pandas as pd
-from scipy.signal import fftconvolve
 
+try:
+    # Preferred: SciPy's highly-optimized FFT convolution.
+    from scipy.signal import fftconvolve  # type: ignore
+except ImportError:  # pragma: no cover
+    def fftconvolve(a: np.ndarray, b: np.ndarray, mode: str = "full") -> np.ndarray:
+        """Numpy-only fallback for SciPy's fftconvolve.
+
+        This implementation is intentionally minimal: it only supports
+        mode="valid", which is the only mode used by this module.
+        """
+        if mode != "valid":
+            raise ImportError("scipy is required for fftconvolve with mode != 'valid'")
+
+        a = np.asarray(a, dtype=float)
+        b = np.asarray(b, dtype=float)
+        n, m = len(a), len(b)
+        if m > n:
+            return np.array([], dtype=float)
+
+        # Full linear convolution via FFT, then slice out the 'valid' region.
+        size = n + m - 1
+        fft_size = 1 << (size - 1).bit_length()
+        fa = np.fft.rfft(a, fft_size)
+        fb = np.fft.rfft(b, fft_size)
+        full = np.fft.irfft(fa * fb, fft_size)[:size]
+
+        start = m - 1
+        end = start + (n - m + 1)
+        return full[start:end]
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
