@@ -59,6 +59,8 @@ except ImportError:  # pragma: no cover
         start = m - 1
         end = start + (n - m + 1)
         return full[start:end]
+
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
